@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
 import tkinter as tk
@@ -14,7 +15,7 @@ class MarkdownToWordApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Markdown -> Word 一键转换")
-        self.root.geometry("980x760")
+        self.root.geometry("980x640")
 
         self.settings_path = Path(__file__).resolve().parent / "settings.json"
         self.config = self._load_settings()
@@ -96,6 +97,8 @@ class MarkdownToWordApp:
             else:
                 messagebox.showinfo("完成", f"文档已生成:\n{output_path}")
                 self.status_var.set(f"完成: {output_path}")
+
+            self._open_output_file(output_path)
         except Exception as exc:  # noqa: BLE001
             self.status_var.set(f"失败: {exc}")
             messagebox.showerror("转换失败", str(exc))
@@ -149,6 +152,12 @@ class MarkdownToWordApp:
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _open_output_file(self, output_path: str) -> None:
+        try:
+            os.startfile(output_path)
+        except Exception:
+            self.status_var.set(f"完成: {output_path}（已生成，但未能自动打开）")
 
     def run(self) -> None:
         self.root.mainloop()

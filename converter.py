@@ -142,7 +142,18 @@ class MarkdownToDocxConverter:
         return normalized
 
     def _normalize_mathml_tree(self, root: etree._Element) -> None:
+        self._convert_mathml_spaces(root)
         self._convert_mathml_stretchy_fences(root)
+
+    def _convert_mathml_spaces(self, root: etree._Element) -> None:
+        for node in root.xpath(".//*[local-name()='mspace']"):
+            width = (node.get("width") or "").strip().lower()
+            replacement = etree.Element(f"{MATHML_TAG}mtext")
+            replacement.text = self._mathml_space_text(width)
+
+            parent = node.getparent()
+            if parent is not None:
+                parent.replace(node, replacement)
 
     def _convert_mathml_stretchy_fences(self, node: etree._Element) -> None:
         for child in list(node):
@@ -189,6 +200,23 @@ class MarkdownToDocxConverter:
 
     def _mathml_text(self, node: etree._Element) -> str:
         return "".join(node.itertext())
+
+    def _mathml_space_text(self, width: str) -> str:
+        if width.endswith("em"):
+            try:
+                amount = float(width[:-2])
+            except ValueError:
+                amount = 1.0
+        else:
+            amount = 1.0
+
+        if amount >= 1.5:
+            return "\u2003\u2003"
+        if amount >= 0.75:
+            return "\u2003"
+        if amount >= 0.4:
+            return "\u2002"
+        return " "
 
     def _normalize_omml_math(self, omml_root: etree._Element) -> None:
         for math_node in self._iter_omath_nodes(omml_root):
