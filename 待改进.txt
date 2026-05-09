@@ -1,0 +1,18 @@
+1、对于
+\[
+\pmb {F}_t = \mathrm{Encoder}_i(\pmb {I}_t). \quad (1)
+\]
+这类公式未能正确识别出\quad或\qquad
+
+2、对于
+\[
+\mathcal{L}_{\mathrm{conf}} = \sum_{(\hat{x},c)\in (\hat{x},\mathcal{C})}\left(c\cdot \left\Vert \frac{\hat{x}}{\hat{s}} -\frac{x}{s}\right\Vert_{2} - \alpha \log c\right), \quad (7)
+\]
+这类公式求和符的高度应自动调整高度适应右边的公式高度。
+
+3、图形界面太高，调整短点，有的电脑显示器高度不够，一下子点不到运行按钮，要挪一下才点得到
+
+4、点击完运行后最好自动帮我打开word文档，不用我再跑去文件夹手动打开
+
+git config --global user.name "Song-Zhi-Long"
+git config --global user.email "908194340@qq.com"
