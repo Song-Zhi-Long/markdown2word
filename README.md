@@ -43,7 +43,7 @@ python markdown2word.py
 ## 项目文件
 
 ```text
-markdown2word.py              GUI 入口
+markdown2word.py    GUI 入口
 converter.py        Markdown -> Word 核心逻辑
 mml2omml.xsl        公式转换所需 XSLT
 settings.json       本地默认配置
