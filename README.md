@@ -6,7 +6,7 @@
 
 ## GUI 效果
 
-![GUI 界面](data/GUI.png)
+![GUI 界面](data/GUI_and_result.png)
 
 ## 目前支持
 
