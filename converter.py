@@ -150,7 +150,7 @@ class MarkdownToDocxConverter:
         if transformed.getroot() is None:
             raise ValueError("Math transform returned empty result.")
         omml_root = deepcopy(transformed.getroot())
-        self._normalize_omml_math(omml_root)
+        self._normalize_omml_math(omml_root, display=display)
         return omml_root
 
     def _preprocess_latex_for_math(self, latex: str, display: bool) -> str:
@@ -254,10 +254,18 @@ class MarkdownToDocxConverter:
             return "\u2002"
         return " "
 
-    def _normalize_omml_math(self, omml_root: etree._Element) -> None:
+    def _normalize_omml_math(self, omml_root: etree._Element, display: bool) -> None:
         for math_node in self._iter_omath_nodes(omml_root):
             self._repair_nary_operand(math_node)
             self._repair_matrix_delimiter(math_node)
+            if display:
+                self._tune_display_nary_style(math_node)
+
+    def _tune_display_nary_style(self, omath: etree._Element) -> None:
+        for nary in omath.xpath(".//*[local-name()='nary']"):
+            grow_nodes = nary.xpath("./*[local-name()='naryPr']/*[local-name()='grow']")
+            for grow in grow_nodes:
+                grow.set(qn("m:val"), "0")
 
     def _iter_omath_nodes(self, root: etree._Element):
         local = self._tag_name(root)

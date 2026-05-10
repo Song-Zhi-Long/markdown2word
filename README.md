@@ -1,133 +1,71 @@
 # Markdown2Word
 
-一个基于 Python 的桌面小工具，用于将 Markdown 文本一键转换为 Word 文档（`.docx`）。
+一个基于 Python + Tkinter 的小工具，用于把 Markdown 文本快速转换为 Word 文档（`.docx`）。
 
-项目提供了简单的图形界面，适合日常写作、课程作业、论文草稿整理、技术文档导出等场景。当前实现重点放在中文文档排版、公式转换、图片与超链接处理，以及更符合中文写作习惯的段落输出效果。
+## GUI 效果
 
-## 项目特点
+![GUI 界面](data/GUI.png)
 
-- 支持通过图形界面直接粘贴 Markdown 内容并导出 Word 文档
-- 支持标题、普通段落、粗体、斜体、下划线、行内代码等常见 Markdown 语法
-- 支持代码块渲染，并为代码块添加背景色
-- 支持表格转换
-- 支持本地图片插入，并自动解析图片路径
-- 支持超链接导出
-- 支持 LaTeX 数学公式转换为 Word 公式
-- 支持独占一行的块公式居中显示，并取消正文首行缩进
-- 支持中文正文首行缩进
-- 支持有序列表按原始文本重新从 `1.` 开始，而不是在 Word 中自动续号
-- 普通文本中的换行不会再输出为手动换行符，最终文档中保留为段落标记
+## 目前支持
 
-## 适用场景
+- 图形界面直接粘贴 Markdown 并导出 Word
+- 标题、普通段落、粗体、斜体、下划线、代码块
+- 表格、图片、超链接
+- 行内公式与独占一行公式
+- 块公式居中显示
+- 正文首行缩进
+- 题注识别与居中
+  - 例如 `表3：...`、`图2：...`、`Table 1: ...`
+- 有序列表按原文重新从 `1.` 开始
+- 转换完成后自动打开生成的 Word 文档
 
-- 将 Markdown 笔记快速整理成 Word 文档
-- 将课程作业、实验报告、论文草稿从 Markdown 导出为 `.docx`
-- 将包含公式、图片、表格的中文技术文档转换为可继续编辑的 Word 文件
+## 运行方式
 
-## 环境要求
-
-- Python 3.10 及以上版本
-- Windows 环境下可直接运行图形界面
-
-## 依赖安装
-
-在项目根目录执行：
+先安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-当前依赖如下：
-
-- `python-docx`
-- `lxml`
-- `markdown`
-- `latex2mathml`
-- `Pillow`
-
-## 运行方式
-
-在项目根目录执行：
+启动程序：
 
 ```bash
 python app.py
 ```
 
-启动后会打开图形界面，主要包含以下几个部分：
-
-- 默认输出目录：生成的 Word 文档保存位置
-- 资源根目录：图片等本地资源的解析基准目录
-- Markdown 输入框：直接粘贴或输入 Markdown 内容
-- 运行按钮：开始转换并导出文档
-
-## 使用说明
-
-1. 运行 `python app.py`
-2. 在界面中设置输出目录
-3. 根据需要设置资源根目录
-4. 将 Markdown 内容粘贴到输入框中
-5. 点击“运行”
-6. 程序会在指定输出目录下生成 `.docx` 文件
-
-## 支持的内容
-
-当前版本对以下内容支持较好：
-
-- 标题：`#` 到 `######`
-- 普通段落
-- 粗体、斜体、下划线
-- 行内代码与代码块
-- 无序列表、有序列表
-- 表格
-- 图片
-- 超链接
-- 行内公式：如 `$a+b$`
-- 块公式：如 `$$ ... $$` 或 `\[ ... \]`
-
-## 排版规则说明
-
-为了更适合中文文档输出，当前版本做了这些处理：
-
-- 正文段落默认首行缩进 2 字符
-- 独占一行的公式会单独成段并居中显示
-- 公式段不再保留正文首行缩进
-- 列表编号按 Markdown 原文显示，不依赖 Word 自动续号
-- 普通换行不再生成 Word 的手动换行符，尽量避免后续排版混乱
-
-## 项目结构
+## 项目文件
 
 ```text
-markdown2word/
-├─ app.py              # 图形界面入口
-├─ converter.py        # Markdown -> Word 核心转换逻辑
-├─ mml2omml.xsl        # MathML 转 OMML 所需 XSLT
-├─ requirements.txt    # 项目依赖
-├─ settings.json       # 本地默认配置
-└─ README.md           # 项目说明文档
+app.py              GUI 入口
+converter.py        Markdown -> Word 核心逻辑
+mml2omml.xsl        公式转换所需 XSLT
+settings.json       本地默认配置
+data/GUI.png        GUI 截图
+data/app_icon.ico   程序图标
 ```
 
-## 配置说明
+## 打包为 exe
 
-程序会读取并保存 `settings.json` 中的默认配置，主要包括：
+安装 `pyinstaller` 后，在项目根目录执行：
 
-- `output_dir`：默认输出目录
-- `asset_root`：资源根目录
-- `title_chars`：导出文件名截取的标题长度
-- `auto_timestamp`：是否自动在文件名后追加时间戳
+```bash
+pyinstaller --noconfirm --clean --windowed --onefile --icon data/app_icon.ico --add-data "mml2omml.xsl;." app.py
+```
 
-## 已知说明
+生成后的可执行文件在：
 
-- 超链接在 Word 中是否会在点击后自动变为“已访问颜色”，仍取决于 Word 本身的渲染行为
-- 如果公式转换失败，程序会回退为普通文本显示，并在界面中提示警告
-- 图片路径依赖资源根目录解析，若路径不正确，文档中会给出缺失提示
+```text
+dist/app.exe
+```
 
-## 后续可扩展方向
+如果你想顺手把 `settings.json` 一起打进去，也可以用：
 
-- 支持更多 Markdown 扩展语法
-- 支持自定义 Word 模板
-- 支持更细致的段落、字体、页边距和标题样式控制
-- 支持批量导入 Markdown 文件并自动导出
+```bash
+pyinstaller --noconfirm --clean --windowed --onefile --icon data/app_icon.ico --add-data "mml2omml.xsl;." --add-data "settings.json;." app.py
+```
 
-## 许可证
+## 说明
 
-当前仓库未单独声明许可证。如需开源发布，建议补充 `LICENSE` 文件。
+- `mml2omml.xsl` 是公式转换必须文件，打包时一定要带上
+- `settings.json` 不打包也能运行，程序会按默认配置启动
+- `data/GUI.png` 只是 README 展示图片，不需要打包进 exe
