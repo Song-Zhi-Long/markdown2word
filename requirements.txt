@@ -3,3 +3,4 @@ lxml
 markdown
 latex2mathml
 Pillow
+pyinstaller 
