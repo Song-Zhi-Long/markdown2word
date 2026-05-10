@@ -52,7 +52,7 @@ class MarkdownToWordApp:
         action_frame = tk.Frame(self.root)
         action_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        tk.Button(action_frame, text="运行", width=12, command=self._run_conversion).pack(side="left")
+        tk.Button(action_frame, text="运行", width=12, height=2, command=self._run_conversion).pack(side="left")
         tk.Label(action_frame, textvariable=self.status_var, anchor="w").pack(side="left", padx=(12, 0), fill="x", expand=True)
 
     def _choose_output_dir(self) -> None:

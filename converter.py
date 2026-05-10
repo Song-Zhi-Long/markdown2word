@@ -25,6 +25,34 @@ INLINE_MATH_TOKEN = "MATHINLINE"
 BLOCK_MATH_TOKEN = "MATHBLOCK"
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 MATHML_TAG = f"{{{MATHML_NS}}}"
+SCRIPT_MATH_CHARS = {
+    "𝒜": "A",
+    "ℬ": "B",
+    "𝒞": "C",
+    "𝒟": "D",
+    "ℰ": "E",
+    "ℱ": "F",
+    "𝒢": "G",
+    "ℋ": "H",
+    "ℐ": "I",
+    "𝒥": "J",
+    "𝒦": "K",
+    "ℒ": "L",
+    "ℳ": "M",
+    "𝒩": "N",
+    "𝒪": "O",
+    "𝒫": "P",
+    "𝒬": "Q",
+    "ℛ": "R",
+    "𝒮": "S",
+    "𝒯": "T",
+    "𝒰": "U",
+    "𝒱": "V",
+    "𝒲": "W",
+    "𝒳": "X",
+    "𝒴": "Y",
+    "𝒵": "Z",
+}
 
 LATIN_FONT = "Times New Roman"
 CJK_FONT = "宋体"
@@ -142,8 +170,16 @@ class MarkdownToDocxConverter:
         return normalized
 
     def _normalize_mathml_tree(self, root: etree._Element) -> None:
+        self._normalize_mathml_script_chars(root)
         self._convert_mathml_spaces(root)
         self._convert_mathml_stretchy_fences(root)
+
+    def _normalize_mathml_script_chars(self, root: etree._Element) -> None:
+        for node in root.xpath(".//*[local-name()='mi']"):
+            text = (node.text or "").strip()
+            if text in SCRIPT_MATH_CHARS:
+                node.text = SCRIPT_MATH_CHARS[text]
+                node.set("mathvariant", "script")
 
     def _convert_mathml_spaces(self, root: etree._Element) -> None:
         for node in root.xpath(".//*[local-name()='mspace']"):
@@ -564,6 +600,7 @@ class MarkdownToDocxConverter:
                     pass
                 style.size_pt = CAPTION_SIZE_PT
                 para.paragraph_format.first_line_indent = Pt(0)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             elif tag != "center":
                 para.paragraph_format.first_line_indent = Pt(BODY_FIRST_LINE_INDENT_PT)
 
@@ -995,17 +1032,17 @@ class MarkdownToDocxConverter:
                     run.text = f"${latex}$"
             else:
                 self._apply_display_math_paragraph_format(paragraph)
-                run = paragraph.add_run()
-                self._set_run_fonts(run, LATIN_FONT, CJK_FONT)
                 if local_tag == "omathpara":
-                    math_nodes = omml.xpath(".//*[local-name()='oMath']")
-                    if math_nodes:
-                        run._r.append(deepcopy(math_nodes[0]))
-                    else:
-                        run.text = f"$$ {latex} $$"
+                    self._set_omathpara_center(omml)
+                    paragraph._p.append(omml)
                 elif local_tag == "omath":
-                    run._r.append(omml)
+                    wrapper = OxmlElement("m:oMathPara")
+                    wrapper.append(omml)
+                    self._set_omathpara_center(wrapper)
+                    paragraph._p.append(wrapper)
                 else:
+                    run = paragraph.add_run()
+                    self._set_run_fonts(run, LATIN_FONT, CJK_FONT)
                     run.text = f"$$ {latex} $$"
         except Exception as exc:  # noqa: BLE001
             self.last_warnings.append(f"Formula fallback: {latex[:60]} ({exc})")
@@ -1197,7 +1234,7 @@ class MarkdownToDocxConverter:
 
     def _is_caption_text(self, text: str) -> bool:
         normalized = re.sub(r"\s+", " ", text or "").strip().lower()
-        return bool(re.match(r"^(表|图|table|figure)\s*\d*", normalized))
+        return bool(re.match(r"^(表|图)\s*\d+\s*[:：]|^(table|figure)\s*\d+\s*:", normalized))
 
     def _tag_name(self, node) -> str:
         if node is None:
