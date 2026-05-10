@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import re
+import sys
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -97,7 +98,7 @@ class TextStyle:
 
 class MarkdownToDocxConverter:
     def __init__(self, xsl_path: Optional[str] = None) -> None:
-        root = Path(__file__).resolve().parent
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
         self.xsl_path = Path(xsl_path) if xsl_path else root / "mml2omml.xsl"
         if not self.xsl_path.exists():
             raise FileNotFoundError(f"Cannot find XSLT file: {self.xsl_path}")

@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from dataclasses import asdict
 from pathlib import Path
 import tkinter as tk
@@ -17,7 +18,7 @@ class MarkdownToWordApp:
         self.root.title("Markdown -> Word 一键转换")
         self.root.geometry("980x680")
 
-        self.settings_path = Path(__file__).resolve().parent / "settings.json"
+        self.settings_path = self._resolve_settings_path()
         self.config = self._load_settings()
         self.converter = MarkdownToDocxConverter()
 
@@ -132,6 +133,11 @@ class MarkdownToWordApp:
             )
         except Exception:
             return default
+
+    def _resolve_settings_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "settings.json"
+        return Path(__file__).resolve().parent / "settings.json"
 
     def _detect_downloads_dir(self) -> Path:
         home = Path.home()

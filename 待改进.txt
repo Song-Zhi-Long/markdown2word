@@ -1,9 +1,0 @@
-1、对于
-\[
-\mathcal{L}_{\mathrm{conf}} = \sum_{(\hat{x},c)\in (\hat{x},\mathcal{C})}\left(c\cdot \left\Vert \frac{\hat{x}}{\hat{s}} -\frac{x}{s}\right\Vert_{2} - \alpha \log c\right), \quad (7)
-\]
-求和符还是要高出右边求和符的求和项公式一截呀，要搞出图片中上面那种高度效果
-
-2、运行按钮高度还是不够呀，搞高点（和上面的浏览按钮一样高）
-
-3、运行完成后我不想要弹窗提示了，有运行按钮右边的文本提示就可以了，改成运行后自动弹出word文档就行
