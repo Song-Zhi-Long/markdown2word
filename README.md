@@ -27,6 +27,10 @@
   - title_chars（导出文件名截取的标题长度），默认是 12
   - auto_timestamp（是否自动在文件名后追加时间戳），默认是 True
 
+## 后续调优历程
+
+ - 2026年5月11日——添加正文首行缩进开关、修改了列表中字体无法加粗显示的bug、优化了列表的缩进美观、完善对exe程序的读取配置规则
+
 ## 适用场景
 
 - 将 Markdown 笔记快速整理成 Word 文档
@@ -54,6 +58,11 @@ python markdown2word.py
 ```
 
 **或者直接在windows系统中双击markdown2word.exe即可运行**
+
+```bash
+打开 markdown2word 文件夹双击 markdown2word.exe 文件
+（注：settings.json 配置文件需与 exe 文件位于同一文件夹内）
+```
 
 ## 项目文件
 
