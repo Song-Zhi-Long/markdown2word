@@ -24,6 +24,7 @@ class MarkdownToWordApp:
 
         self.output_var = tk.StringVar(value=self.config.output_dir)
         self.asset_var = tk.StringVar(value=self.config.asset_root)
+        self.body_indent_var = tk.BooleanVar(value=self.config.body_first_line_indent)
         self.status_var = tk.StringVar(value="就绪")
 
         self._build_ui()
@@ -41,6 +42,14 @@ class MarkdownToWordApp:
         asset_entry = tk.Entry(settings_frame, textvariable=self.asset_var)
         asset_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0))
         tk.Button(settings_frame, text="浏览", command=self._choose_asset_dir, width=8).grid(row=1, column=2, pady=(8, 0))
+
+        tk.Checkbutton(
+            settings_frame,
+            text="正文首行缩进",
+            variable=self.body_indent_var,
+            onvalue=True,
+            offvalue=False,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         settings_frame.columnconfigure(1, weight=1)
 
@@ -79,6 +88,7 @@ class MarkdownToWordApp:
             asset_root=self.asset_var.get().strip() or str(Path.cwd()),
             title_chars=self.config.title_chars,
             auto_timestamp=True,
+            body_first_line_indent=self.body_indent_var.get(),
         )
 
         self.status_var.set("正在转换，请稍候...")
@@ -109,6 +119,7 @@ class MarkdownToWordApp:
             asset_root=str(default_asset),
             title_chars=12,
             auto_timestamp=True,
+            body_first_line_indent=True,
         )
 
         if not self.settings_path.exists():
@@ -130,6 +141,7 @@ class MarkdownToWordApp:
                 asset_root=asset_root,
                 title_chars=int(payload.get("title_chars", default.title_chars)),
                 auto_timestamp=bool(payload.get("auto_timestamp", True)),
+                body_first_line_indent=bool(payload.get("body_first_line_indent", default.body_first_line_indent)),
             )
         except Exception:
             return default

@@ -76,6 +76,7 @@ class AppConfig:
     asset_root: str
     title_chars: int = 12
     auto_timestamp: bool = True
+    body_first_line_indent: bool = True
 
 
 @dataclass
@@ -610,8 +611,10 @@ class MarkdownToDocxConverter:
                 style.size_pt = CAPTION_SIZE_PT
                 para.paragraph_format.first_line_indent = Pt(0)
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            elif tag != "center":
+            elif tag != "center" and config.body_first_line_indent:
                 para.paragraph_format.first_line_indent = Pt(BODY_FIRST_LINE_INDENT_PT)
+            else:
+                para.paragraph_format.first_line_indent = Pt(0)
 
             self._render_inline_node(node, para, container, config, style)
             return
@@ -683,16 +686,7 @@ class MarkdownToDocxConverter:
 
     def _render_list_item_inline(self, li: etree._Element, paragraph, container, config: AppConfig) -> None:
         base_style = TextStyle(size_pt=BODY_SIZE_PT)
-        if li.text and li.text.strip():
-            paragraph = self._append_text(paragraph, container, li.text, base_style)
-
-        for child in li:
-            tag = self._tag_name(child)
-            if tag in {"ul", "ol"}:
-                continue
-            paragraph = self._render_inline_node(child, paragraph, container, config, base_style)
-            if child.tail and child.tail.strip():
-                paragraph = self._append_text(paragraph, container, child.tail, base_style)
+        self._render_inline_node(li, paragraph, container, config, base_style)
 
     def _render_table(self, table_node: etree._Element, container, config: AppConfig) -> None:
         rows = table_node.xpath("./thead/tr|./tbody/tr|./tfoot/tr|./tr")
@@ -745,6 +739,8 @@ class MarkdownToDocxConverter:
             child_tag = self._tag_name(child)
             child_style = style.copy()
 
+            if child_tag in {"ul", "ol"}:
+                continue
             if child_tag in {"strong", "b"}:
                 child_style.bold = True
                 paragraph = self._render_inline_node(child, paragraph, container, config, child_style)
