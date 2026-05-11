@@ -67,7 +67,8 @@ CAPTION_SIZE_PT = 10.5
 CODE_SIZE_PT = 10.5
 BODY_FIRST_LINE_INDENT_PT = 24.0
 LIST_INDENT_PT = 18.0
-LIST_HANGING_INDENT_PT = 18.0
+LIST_MARKER_MIN_WIDTH_PT = 11.0
+LIST_MARKER_CHAR_WIDTH_PT = 5.5
 
 
 @dataclass
@@ -671,8 +672,9 @@ class MarkdownToDocxConverter:
 
         for li in node.xpath("./li"):
             para = container.add_paragraph()
-            self._configure_list_paragraph(para, level)
-            prefix = f"{next_number}. " if ordered else self._bullet_prefix(level)
+            marker = f"{next_number}." if ordered else self._bullet_prefix(level)
+            prefix = f"{marker} \t"
+            self._configure_list_paragraph(para, level, marker_text=f"{marker} ")
             prefix_run = para.add_run(prefix)
             self._apply_run_style(prefix_run, TextStyle(size_pt=BODY_SIZE_PT))
             self._render_list_item_inline(li, para, container, config)
@@ -1172,14 +1174,19 @@ class MarkdownToDocxConverter:
         except ValueError:
             return 1
 
-    def _configure_list_paragraph(self, paragraph, level: int) -> None:
-        left_indent = Pt(LIST_INDENT_PT * level)
+    def _configure_list_paragraph(self, paragraph, level: int, marker_text: str) -> None:
+        marker_width_pt = self._estimate_list_marker_width(marker_text)
+        left_indent = Pt((LIST_INDENT_PT * max(level - 1, 0)) + marker_width_pt)
         paragraph.paragraph_format.left_indent = left_indent
-        paragraph.paragraph_format.first_line_indent = Pt(-LIST_HANGING_INDENT_PT)
+        paragraph.paragraph_format.first_line_indent = Pt(-marker_width_pt)
+        paragraph.paragraph_format.tab_stops.add_tab_stop(left_indent)
 
     def _bullet_prefix(self, level: int) -> str:
-        bullets = ["• ", "◦ ", "▪ "]
+        bullets = ["•", "◦", "▪"]
         return bullets[min(max(level - 1, 0), len(bullets) - 1)]
+
+    def _estimate_list_marker_width(self, marker_text: str) -> float:
+        return max(LIST_MARKER_MIN_WIDTH_PT, len(marker_text) * LIST_MARKER_CHAR_WIDTH_PT)
 
     def _add_paragraph_with_style(self, container, style_names: Iterable[str]):
         for style_name in style_names:
