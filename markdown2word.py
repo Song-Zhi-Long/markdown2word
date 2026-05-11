@@ -147,9 +147,13 @@ class MarkdownToWordApp:
             return default
 
     def _resolve_settings_path(self) -> Path:
+        runtime_dir = self._resolve_runtime_dir()
+        return runtime_dir / "settings.json"
+
+    def _resolve_runtime_dir(self) -> Path:
         if getattr(sys, "frozen", False):
-            return Path(sys.executable).resolve().parent / "settings.json"
-        return Path(__file__).resolve().parent / "settings.json"
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent
 
     def _detect_downloads_dir(self) -> Path:
         home = Path.home()
