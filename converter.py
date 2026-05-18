@@ -22,6 +22,7 @@ from lxml import etree, html as lxml_html
 from PIL import Image
 
 TOKEN_PATTERN = re.compile(r"(MATH(?:BLOCK|INLINE)TOK\d+END)")
+CAPTION_PREFIX_PATTERN = re.compile(r"^(表|图)\s*\d+\s*[:：]|^(table|figure)\s*\d+\s*:", re.IGNORECASE)
 INLINE_MATH_TOKEN = "MATHINLINE"
 BLOCK_MATH_TOKEN = "MATHBLOCK"
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
@@ -489,8 +490,103 @@ class MarkdownToDocxConverter:
     def _prepare_markdown(self, text: str) -> str:
         masked_text, code_tokens = self._mask_code_regions(text)
         list_ready_text = self._split_reset_ordered_lists(masked_text)
-        math_ready_text = self._extract_math_tokens(list_ready_text)
+        caption_ready_text = self._merge_caption_headings(list_ready_text)
+        math_ready_text = self._extract_math_tokens(caption_ready_text)
         return self._restore_tokens(math_ready_text, code_tokens)
+
+    def _merge_caption_headings(self, text: str) -> str:
+        lines = text.splitlines()
+        result: List[str] = []
+        index = 0
+
+        while index < len(lines):
+            match = re.match(r"^(#{2,6})\s+(.*?)\s*$", lines[index])
+            if not match:
+                result.append(lines[index])
+                index += 1
+                continue
+
+            heading_text = re.sub(r"\s+#+\s*$", "", match.group(2)).strip()
+            if not self._looks_like_caption_start(heading_text):
+                result.append(lines[index])
+                index += 1
+                continue
+
+            next_index = index + 1
+            while next_index < len(lines) and not lines[next_index].strip():
+                next_index += 1
+
+            if next_index >= len(lines) or self._is_block_boundary(lines[next_index]):
+                result.append(lines[index])
+                index += 1
+                continue
+
+            paragraph_lines: List[str] = []
+            end_index = next_index
+            while end_index < len(lines) and lines[end_index].strip():
+                if self._is_block_boundary(lines[end_index]) and paragraph_lines:
+                    break
+                paragraph_lines.append(lines[end_index])
+                end_index += 1
+
+            if not paragraph_lines:
+                result.append(lines[index])
+                index += 1
+                continue
+
+            merged_paragraph = self._collapse_markdown_lines(paragraph_lines)
+            result.append(self._merge_caption_heading_and_body(heading_text, merged_paragraph))
+            index = end_index
+
+        return "\n".join(result)
+
+    def _collapse_markdown_lines(self, lines: List[str]) -> str:
+        combined = ""
+        for line in lines:
+            segment = line.strip()
+            if not segment:
+                continue
+            if not combined:
+                combined = segment
+                continue
+
+            if self._needs_join_space(combined[-1], segment[0]):
+                combined += " "
+            combined += segment
+        return combined
+
+    def _needs_join_space(self, left_char: str, right_char: str) -> bool:
+        return bool(re.match(r"[A-Za-z0-9]", left_char) and re.match(r"[A-Za-z0-9]", right_char))
+
+    def _merge_caption_heading_and_body(self, heading_text: str, body_text: str) -> str:
+        heading_with_period = self._ensure_caption_terminal_punctuation(heading_text)
+        separator = ""
+        if re.search(r"[.!?]$", heading_with_period) and body_text and re.match(r"[A-Za-z0-9]", body_text[0]):
+            separator = " "
+        return f"{heading_with_period}{separator}{body_text}"
+
+    def _ensure_caption_terminal_punctuation(self, text: str) -> str:
+        if re.search(r"[。．.!！？?]$", text):
+            return text
+        if re.match(r"^(table|figure)\s*\d+\s*:", text.strip(), re.IGNORECASE):
+            return f"{text}."
+        return f"{text}。"
+
+    def _is_block_boundary(self, line: str) -> bool:
+        stripped = line.lstrip()
+        return bool(
+            re.match(r"^(#{1,6})\s+", stripped)
+            or re.match(r"^(```|~~~)", stripped)
+            or re.match(r"^>\s*", stripped)
+            or re.match(r"^(\*|-|\+)\s+", stripped)
+            or re.match(r"^\d+[.)]\s+", stripped)
+            or stripped.startswith("|")
+            or stripped.startswith("<")
+        )
+
+    def _looks_like_caption_start(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text or "").strip()
+        return bool(CAPTION_PREFIX_PATTERN.match(normalized))
 
     def _mask_code_regions(self, text: str) -> Tuple[str, Dict[str, str]]:
         tokens: Dict[str, str] = {}
@@ -1246,7 +1342,7 @@ class MarkdownToDocxConverter:
 
     def _is_caption_text(self, text: str) -> bool:
         normalized = re.sub(r"\s+", " ", text or "").strip().lower()
-        return bool(re.match(r"^(表|图)\s*\d+\s*[:：]|^(table|figure)\s*\d+\s*:", normalized))
+        return bool(CAPTION_PREFIX_PATTERN.match(normalized))
 
     def _tag_name(self, node) -> str:
         if node is None:
