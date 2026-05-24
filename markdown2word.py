@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 
 import json
-import os
+import shutil
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -173,7 +174,18 @@ class MarkdownToWordApp:
 
     def _open_output_file(self, output_path: str) -> bool:
         try:
-            os.startfile(output_path)
+            target = str(Path(output_path).resolve())
+            if sys.platform.startswith("win"):
+                import os
+
+                os.startfile(target)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target])
+            else:
+                opener = shutil.which("xdg-open")
+                if opener is None:
+                    return False
+                subprocess.Popen([opener, target])
             return True
         except Exception:
             return False

@@ -20,7 +20,7 @@
 - 题注识别与居中
   - 例如 `表3：...`、`图2：...`、`Table 1: ...`
 - 有序列表按原文重新从 `1.` 开始
-- 转换完成后自动打开生成的 Word 文档
+- 转换完成后自动尝试打开生成的 Word 文档（Windows / macOS / Linux 图形界面）
 - setting.json中的
   - output_dir（输出目录），默认输出目录优先取用户的 Downloads，如果没有就尝试 下载，再不行就退回到用户主目录
   - asset_root（资源根目录），默认为当前工作目录，也就是你从哪里启动程序，默认资源根目录就指向哪里
@@ -29,13 +29,14 @@
 
 ## 后续调优历程
 
- - 2026年5月11日——添加正文首行缩进开关、修改了列表中字体无法加粗显示的bug、优化了列表的缩进美观、完善对exe程序的读取配置规则
- - 2026年5月18日——针对豆包给的文本存在
+  - 2026年5月11日——添加正文首行缩进开关、修改了列表中字体无法加粗显示的bug、优化了列表的缩进美观、完善对exe程序的读取配置规则
+  - 2026年5月18日——针对豆包给的文本存在
     ```text
     ## 图1：实验结果对比
     我们的方法……
     ```
     识别为二级标题+文本而不能正确识别为图表标题的情况，代码添加了预处理阶段，将其合并为一个普通段落，再走 Caption 样式识别
+  - 2026年5月24日——补充跨平台运行支持，生成完成后会按系统分别调用 Windows 默认打开方式、macOS `open` 或 Linux `xdg-open`
 
 ## 适用场景
 
@@ -47,9 +48,16 @@
 ## 环境要求
 
 - Python 3.10 及以上版本
-- Windows 环境下可直接运行图形界面
+- 带图形界面的 Windows、macOS 或 Linux 环境
+- Tkinter 可用
+  - Ubuntu / Debian 通常需要额外安装 `python3-tk`
+- 如果希望转换完成后自动打开文档
+  - macOS 需要系统自带 `open`
+  - Linux 需要桌面环境和 `xdg-open`
 
 ## 运行方式
+
+### Windows
 
 先安装依赖：
 
@@ -70,6 +78,33 @@ python markdown2word.py
 （注：settings.json 配置文件需与 exe 文件位于同一文件夹内）
 ```
 
+### Ubuntu / Debian（图形界面）
+
+先安装 Tkinter 和 pip：
+
+```bash
+sudo apt update
+sudo apt install python3-tk
+```
+
+再安装依赖并启动：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 markdown2word.py
+```
+
+### macOS
+
+安装依赖并启动：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 markdown2word.py
+```
+
+如果本机 Python 没有带 Tkinter，建议使用 python.org 官方安装包，或自行补齐 Tk 环境。
+
 ## 项目文件
 
 ```text
@@ -88,8 +123,20 @@ data/app_icon.ico   程序图标
 - 支持更细致的段落、字体、页边距和标题样式控制
 - 支持批量导入 Markdown 文件并自动导出
 
-## exe打包指令
+## 打包指令
+
+### Windows exe
+
+exe程序已经打包并放在 markdown2word 文件夹下
 
 ```bash
 pyinstaller --noconfirm --clean --windowed --onefile --icon data/app_icon.ico --add-data "mml2omml.xsl;." --collect-data latex2mathml markdown2word.py
+```
+
+### macOS / Linux
+
+注意 `--add-data` 的分隔符要改成 `:`，且打包过程需自己运行下述指令完成
+
+```bash
+pyinstaller --noconfirm --clean --windowed --onefile --add-data "mml2omml.xsl:." --collect-data latex2mathml markdown2word.py
 ```
