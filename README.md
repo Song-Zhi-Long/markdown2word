@@ -49,6 +49,7 @@
 
 - Python 3.10 及以上版本
 - 带图形界面的 Windows、macOS 或 Linux 环境
+- 电脑安装 Microsoft Office 2019 或以上版本（否则可能不能自动打开word）
 - Tkinter 可用
   - Ubuntu / Debian 通常需要额外安装 `python3-tk`
 - 如果希望转换完成后自动打开文档
