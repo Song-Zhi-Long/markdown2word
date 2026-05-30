@@ -13,6 +13,7 @@ import markdown
 from docx import Document
 from docx.document import Document as _DocumentType
 from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
@@ -23,7 +24,10 @@ from lxml import etree, html as lxml_html
 from PIL import Image
 
 TOKEN_PATTERN = re.compile(r"(MATH(?:BLOCK|INLINE)TOK\d+END)")
-CAPTION_PREFIX_PATTERN = re.compile(r"^(表|图)\s*\d+\s*[:：]|^(table|figure)\s*\d+\s*:", re.IGNORECASE)
+CAPTION_PREFIX_PATTERN = re.compile(
+    r"^(?:(?:表|图)\s*\d+(?:\s*[:：]\s*|\s+)\S|(?:table|figure)\s*\d+(?:\s*:\s*|\s+)\S)",
+    re.IGNORECASE,
+)
 INLINE_MATH_TOKEN = "MATHINLINE"
 BLOCK_MATH_TOKEN = "MATHBLOCK"
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
@@ -573,7 +577,7 @@ class MarkdownToDocxConverter:
     def _ensure_caption_terminal_punctuation(self, text: str) -> str:
         if re.search(r"[。．.!！？?]$", text):
             return text
-        if re.match(r"^(table|figure)\s*\d+\s*:", text.strip(), re.IGNORECASE):
+        if re.match(r"^(table|figure)\s*\d+(?:\s*:\s*|\s+)\S", text.strip(), re.IGNORECASE):
             return f"{text}."
         return f"{text}。"
 
@@ -833,6 +837,7 @@ class MarkdownToDocxConverter:
 
         table = container.add_table(rows=max_row + 1, cols=max_col + 1)
         table.style = "Table Grid"
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
         for (r_idx, c_idx), (_, rowspan, colspan) in anchors.items():
             if rowspan > 1 or colspan > 1:
