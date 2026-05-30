@@ -63,7 +63,7 @@
 
 ## 运行方式
 
-Windows、Linux、macOS三种平台都推荐使用 conda 环境运行。`tk`、`cairosvg`、`cairo` 可以在创建环境时一次装好。
+Windows、macOS、Linux三种平台都推荐使用 conda 环境运行。`tk`、`cairosvg`、`cairo` 可以在创建环境时一次装好。
 
 ### 使用 base 环境（方便简单项目管理）
 
