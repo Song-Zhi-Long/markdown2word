@@ -29,6 +29,7 @@
   - asset_root（资源根目录），默认为当前工作目录，也就是你从哪里启动程序，默认资源根目录就指向哪里
   - title_chars（导出文件名截取的标题长度），默认是 12
   - auto_timestamp（是否自动在文件名后追加时间戳），默认是 True
+  - body_first_line_indent（正文首行是否缩进），默认是 True
 
 ## 后续调优历程
 
