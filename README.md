@@ -17,6 +17,9 @@
 - 独占一行的公式会单独成段并居中显示且不首行缩进
 - 块公式居中显示
 - 正文首行缩进2字符
+- 一级标题居中显示
+- 单独一行的“摘要”居中显示
+- 独占一行的图片居中显示且不首行缩进
 - 题注识别与居中
   - 例如 `表3：...`、`图2：...`、`Table 1: ...`
 - 有序列表按原文重新从 `1.` 开始
@@ -37,6 +40,7 @@
     ```
     识别为二级标题+文本而不能正确识别为图表标题的情况，代码添加了预处理阶段，将其合并为一个普通段落，再走 Caption 样式识别
   - 2026年5月24日——补充跨平台运行支持，生成完成后会按系统分别调用 Windows 默认打开方式、macOS `open` 或 Linux `xdg-open`
+  - 2026年5月30日——图片插入格式居中、标题摘要居中、SVG 图片插入、资源根目录支持与markdown中的相对路径进行拼接再寻找图片等资源（适合存在多个资源目录的情况）也支持不与markdown中的相对路径进行拼接，直接定位资源根目录下的文件名（适合仅存在单个资源目录的情况）
 
 ## 适用场景
 
@@ -49,72 +53,50 @@
 
 - Python 3.10 及以上版本
 - 带图形界面的 Windows、macOS 或 Linux 环境
-- 电脑安装 Microsoft Office 2019 或以上版本（否则可能不能自动打开word）
-- Tkinter 可用
-  - Ubuntu / Debian 通常需要额外安装 `python3-tk`
+- 电脑安装 Microsoft Office 并设为`.docx`的默认打开软件（wps打开的话公式阅读正常但可能复制粘贴格式会出问题）
+- 推荐使用 conda 环境运行，Tkinter、Cairo 等底层依赖统一由 conda 管理
 - 如果希望转换完成后自动打开文档
   - macOS 需要系统自带 `open`
   - Linux 需要桌面环境和 `xdg-open`
+- SVG 图片会通过 `cairosvg` 自动转换为 PNG 后插入；如果转换失败，可以先手动把 SVG 转成 PNG/JPG
 
 ## 运行方式
 
-### Windows
+Windows、Linux、macOS三种平台都推荐使用 conda 环境运行。`tk`、`cairosvg`、`cairo` 可以在创建环境时一次装好。
 
-先安装依赖：
+### 使用 base 环境（方便简单项目管理）
+
+如果只是自己电脑上长期使用，可以直接在 conda 的 `base` 环境里安装依赖并运行：
 
 ```bash
+conda activate base
+conda install -c conda-forge tk cairosvg cairo
 pip install -r requirements.txt
-```
-
-启动程序：
-
-```bash
 python markdown2word.py
 ```
 
-**或者直接在windows系统中双击markdown2word.exe即可运行**
+这种方式步骤更少，适合简单项目的统筹base管理，但会把本项目依赖安装到 `base` 环境中。如果希望环境更干净，建议使用下面的专用环境方式。
 
-```text
-打开 markdown2word 文件夹双击 markdown2word.exe 文件
-（注：settings.json 配置文件需与 exe 文件位于同一文件夹内）
-```
+### 新建环境（环境更干净）
 
-### Ubuntu / Debian（图形界面）
-
-先安装 Tkinter 和 pip：
+安装 Anaconda 或 Miniconda 后，在项目目录打开终端，执行：
 
 ```bash
-sudo apt update
-sudo apt install python3-tk
+conda create -n markdown2word python=3.10 pip tk cairosvg cairo -c conda-forge
+conda activate markdown2word
+pip install -r requirements.txt
+python markdown2word.py
 ```
-
-再安装依赖并启动：
-
-```bash
-python3 -m pip install -r requirements.txt
-python3 markdown2word.py
-```
-
-### macOS
-
-安装依赖并启动：
-
-```bash
-python3 -m pip install -r requirements.txt
-python3 markdown2word.py
-```
-
-如果本机 Python 没有带 Tkinter，建议使用 python.org 官方安装包，或自行补齐 Tk 环境。
 
 ## 项目文件
 
 ```text
-markdown2word.py    GUI 入口
-converter.py        Markdown -> Word 核心逻辑
-mml2omml.xsl        公式转换所需 XSLT
-settings.json       本地默认配置
-data/GUI.png        GUI 截图
-data/app_icon.ico   程序图标
+markdown2word.py          GUI 入口
+converter.py              Markdown -> Word 核心逻辑
+mml2omml.xsl              公式转换所需 XSLT
+settings.json             本地默认配置
+data/GUI_and_result.png   GUI 效果截图
+data/app_icon.ico         程序图标
 ```
 
 ## 后续可扩展方向

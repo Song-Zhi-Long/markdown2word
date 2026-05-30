@@ -3,4 +3,5 @@ lxml
 markdown
 latex2mathml
 Pillow
+cairosvg
 pyinstaller

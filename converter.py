@@ -2,6 +2,7 @@
 
 import re
 import sys
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -433,6 +434,10 @@ class MarkdownToDocxConverter:
         if candidate.exists():
             return candidate
 
+        filename_candidate = (base_dir / image_path.name).resolve() if image_path.name else None
+        if filename_candidate is not None and filename_candidate.exists():
+            return filename_candidate
+
         local_candidate = (Path.cwd() / image_path).resolve()
         if local_candidate.exists():
             return local_candidate
@@ -676,6 +681,9 @@ class MarkdownToDocxConverter:
             level = int(tag[1])
             para = container.add_paragraph(style=f"Heading {level}")
             self._apply_alignment(para, node)
+            if level == 1 or self._is_abstract_title(node.text_content()):
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.first_line_indent = Pt(0)
             size = {1: H1_SIZE_PT, 2: H2_SIZE_PT, 3: H3_SIZE_PT}.get(level, BODY_SIZE_PT)
             self._render_inline_node(node, para, container, config, TextStyle(size_pt=size))
             return
@@ -696,6 +704,9 @@ class MarkdownToDocxConverter:
             if tag == "center":
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = Pt(0)
+            elif self._is_image_only_block(node) or self._is_abstract_title(node.text_content()):
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.first_line_indent = Pt(0)
             else:
                 self._apply_alignment(para, node)
 
@@ -706,6 +717,9 @@ class MarkdownToDocxConverter:
                 except KeyError:
                     pass
                 style.size_pt = CAPTION_SIZE_PT
+                para.paragraph_format.first_line_indent = Pt(0)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif self._is_image_only_block(node) or self._is_abstract_title(node.text_content()):
                 para.paragraph_format.first_line_indent = Pt(0)
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             elif tag != "center" and config.body_first_line_indent:
@@ -735,6 +749,8 @@ class MarkdownToDocxConverter:
 
         if tag == "img":
             para = container.add_paragraph()
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            para.paragraph_format.first_line_indent = Pt(0)
             self._insert_image(para, node, config)
             return
 
@@ -1213,17 +1229,62 @@ class MarkdownToDocxConverter:
 
         if resolved is None or not resolved.exists():
             if src:
-                self.last_warnings.append(f"Image not found: {src}")
-                run = paragraph.add_run(f"[Image not found: {src}]")
+                warning = f"图片未找到: {src}（资源根目录: {config.asset_root}）"
+                self.last_warnings.append(warning)
+                run = paragraph.add_run(f"[{warning}]")
                 self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
             return
 
-        width_inches = self._parse_image_width(image_node.get("width"), resolved)
-        run = paragraph.add_run()
-        if width_inches:
-            run.add_picture(str(resolved), width=Inches(width_inches))
-        else:
-            run.add_picture(str(resolved))
+        picture_path = resolved
+        temp_path: Optional[Path] = None
+        try:
+            if resolved.suffix.lower() == ".svg":
+                picture_path, temp_path = self._convert_svg_to_png(resolved)
+
+            width_inches = self._parse_image_width(image_node.get("width"), picture_path)
+            run = paragraph.add_run()
+            if width_inches:
+                run.add_picture(str(picture_path), width=Inches(width_inches))
+            else:
+                run.add_picture(str(picture_path))
+        except Exception as exc:  # noqa: BLE001
+            detail = self._error_detail(exc)
+            if resolved.suffix.lower() == ".svg":
+                detail = f"SVG 图片自动转换失败，请安装 cairosvg/Cairo 或先转为 PNG/JPG。{detail}"
+            warning = f"图片插入失败: {src} -> {resolved}（{detail}）"
+            self.last_warnings.append(warning)
+            run = paragraph.add_run(f"[{warning}]")
+            self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def _convert_svg_to_png(self, image_path: Path) -> Tuple[Path, Path]:
+        try:
+            import cairosvg
+        except Exception as exc:  # noqa: BLE001
+            detail = self._error_detail(exc)
+            raise RuntimeError(f"cairosvg 或 Cairo 图形库不可用，无法自动转换 SVG: {detail}") from exc
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+
+        try:
+            cairosvg.svg2png(url=str(image_path), write_to=str(temp_path))
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+        return temp_path, temp_path
+
+    def _error_detail(self, exc: Exception, max_length: int = 260) -> str:
+        detail = re.sub(r"\s+", " ", str(exc).strip()) or exc.__class__.__name__
+        if len(detail) > max_length:
+            return f"{detail[:max_length]}..."
+        return detail
 
     def _parse_image_width(self, width_attr: Optional[str], image_path: Path) -> Optional[float]:
         max_width = self._page_content_width_inches()
@@ -1343,6 +1404,17 @@ class MarkdownToDocxConverter:
     def _is_caption_text(self, text: str) -> bool:
         normalized = re.sub(r"\s+", " ", text or "").strip().lower()
         return bool(CAPTION_PREFIX_PATTERN.match(normalized))
+
+    def _is_abstract_title(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text or "")
+        return normalized in {"摘要", "摘要:", "摘要："}
+
+    def _is_image_only_block(self, node: etree._Element) -> bool:
+        if not node.xpath(".//*[local-name()='img']"):
+            return False
+
+        text = node.text_content() or ""
+        return not text.strip()
 
     def _tag_name(self, node) -> str:
         if node is None:

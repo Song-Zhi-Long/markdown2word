@@ -100,6 +100,9 @@ class MarkdownToWordApp:
             self._save_settings(config)
 
             warning_count = len(self.converter.last_warnings)
+            if warning_count:
+                self._show_warning_details(output_path, self.converter.last_warnings)
+
             opened = self._open_output_file(output_path)
             if warning_count:
                 suffix = "，已自动打开" if opened else "，未能自动打开"
@@ -108,8 +111,9 @@ class MarkdownToWordApp:
                 suffix = "（已自动打开）" if opened else "（未能自动打开）"
                 self.status_var.set(f"完成: {output_path}{suffix}")
         except Exception as exc:  # noqa: BLE001
-            self.status_var.set(f"失败: {exc}")
-            messagebox.showerror("转换失败", str(exc))
+            detail = str(exc).strip() or exc.__class__.__name__
+            self.status_var.set(f"失败: {detail}")
+            messagebox.showerror("转换失败", detail)
 
     def _load_settings(self) -> AppConfig:
         default_output = self._detect_downloads_dir()
@@ -170,6 +174,18 @@ class MarkdownToWordApp:
         self.settings_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+
+    def _show_warning_details(self, output_path: str, warnings: list[str]) -> None:
+        max_visible = 20
+        visible_warnings = warnings[:max_visible]
+        warning_lines = "\n".join(f"{idx}. {warning}" for idx, warning in enumerate(visible_warnings, start=1))
+        if len(warnings) > max_visible:
+            warning_lines += f"\n... 还有 {len(warnings) - max_visible} 条警告未显示"
+
+        messagebox.showwarning(
+            "转换完成，有警告",
+            f"Word 已生成:\n{output_path}\n\n警告详情:\n{warning_lines}",
         )
 
     def _open_output_file(self, output_path: str) -> bool:
