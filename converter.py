@@ -25,7 +25,7 @@ from PIL import Image
 
 TOKEN_PATTERN = re.compile(r"(MATH(?:BLOCK|INLINE)TOK\d+END)")
 CAPTION_PREFIX_PATTERN = re.compile(
-    r"^(?:(?:表|图)\s*\d+(?:\s*[:：]\s*|\s+)\S|(?:table|figure)\s*\d+(?:\s*:\s*|\s+)\S)",
+    r"^(?:(?:表|图)\s*\d+(?:\s*[:：.．]\s*|\s+)\S|(?:table|figure)\s*\d+(?:\s*[:.]\s*|\s+)\S)",
     re.IGNORECASE,
 )
 INLINE_MATH_TOKEN = "MATHINLINE"
@@ -577,7 +577,7 @@ class MarkdownToDocxConverter:
     def _ensure_caption_terminal_punctuation(self, text: str) -> str:
         if re.search(r"[。．.!！？?]$", text):
             return text
-        if re.match(r"^(table|figure)\s*\d+(?:\s*:\s*|\s+)\S", text.strip(), re.IGNORECASE):
+        if re.match(r"^(table|figure)\s*\d+(?:\s*[:.]\s*|\s+)\S", text.strip(), re.IGNORECASE):
             return f"{text}."
         return f"{text}。"
 
