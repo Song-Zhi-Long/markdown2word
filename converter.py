@@ -3,6 +3,8 @@
 import re
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -75,6 +77,15 @@ BODY_FIRST_LINE_INDENT_PT = 24.0
 LIST_INDENT_PT = 18.0
 LIST_MARKER_MIN_WIDTH_PT = 11.0
 LIST_MARKER_CHAR_WIDTH_PT = 5.5
+BLOCKQUOTE_LEFT_INDENT_PT = 0.0
+BLOCKQUOTE_RIGHT_INDENT_PT = 3.0
+BLOCKQUOTE_FIRST_LINE_INDENT_PT = 0.0
+BLOCKQUOTE_SPACE_BEFORE_PT = 3.0
+BLOCKQUOTE_SPACE_AFTER_PT = 3.0
+BLOCKQUOTE_BORDER_SPACE_PT = 3.0
+BLOCKQUOTE_BORDER_SIZE = "12"
+BLOCKQUOTE_BORDER_COLOR = "A6A6A6"
+BLOCKQUOTE_SHADING = "F2F2F2"
 
 
 @dataclass
@@ -160,10 +171,20 @@ class MarkdownToDocxConverter:
             raise ValueError("Math transform returned empty result.")
         omml_root = deepcopy(transformed.getroot())
         self._normalize_omml_math(omml_root, display=display)
+        if re.search(r"\\begin\{(?:aligned|align\*?|split)\}", latex):
+            self._apply_aligned_matrix_layout(omml_root)
+        if re.search(r"\\begin\{cases\}", latex):
+            self._apply_cases_matrix_layout(omml_root)
         return omml_root
 
     def _preprocess_latex_for_math(self, latex: str, display: bool) -> str:
         normalized = latex
+
+        normalized = re.sub(r"\\\\\s*\[[^\]]+\]", r"\\\\", normalized)
+        normalized = self._normalize_evaluation_bar_after_fraction(normalized)
+        normalized = self._convert_aligned_environments_to_arrays(normalized)
+        if re.search(r"\\begin\{(?:aligned|align\*?|split)\}", normalized):
+            normalized = re.sub(r"(?<!\\)&", "", normalized)
 
         # `\pmb` should preserve the original italic math style for variables.
         normalized = re.sub(r"\\pmb(?=\s*\{)", r"\\boldsymbol", normalized)
@@ -177,6 +198,26 @@ class MarkdownToDocxConverter:
             )
 
         return normalized
+
+    def _normalize_evaluation_bar_after_fraction(self, latex: str) -> str:
+        pattern = re.compile(
+            r"(\\frac\{(?:[^{}]|\{[^{}]*\})+\}\{(?:[^{}]|\{[^{}]*\})+\})"
+            r"\s*\\(?:Big|big|Bigg|bigg)?\|(_\{[^{}]+\})"
+        )
+        return pattern.sub(r"\\left.\1\\right|\2", latex)
+
+    def _convert_aligned_environments_to_arrays(self, latex: str) -> str:
+        pattern = re.compile(r"\\begin\{(?P<env>aligned|align\*?|split)\}(?P<body>.*?)\\end\{(?P=env)\}", re.DOTALL)
+
+        def replacer(match: re.Match[str]) -> str:
+            body = match.group("body")
+            rows = re.split(r"(?<!\\)\\\\", body)
+            max_columns = max((len(re.findall(r"(?<!\\)&", row)) + 1 for row in rows), default=2)
+            max_columns = max(2, max_columns)
+            column_spec = "r" + ("l" * (max_columns - 1))
+            return f"\\begin{{array}}{{{column_spec}}}{body}\\end{{array}}"
+
+        return pattern.sub(replacer, latex)
 
     def _normalize_mathml_tree(self, root: etree._Element) -> None:
         self._normalize_mathml_script_chars(root)
@@ -267,6 +308,7 @@ class MarkdownToDocxConverter:
         for math_node in self._iter_omath_nodes(omml_root):
             self._repair_nary_operand(math_node)
             self._repair_matrix_delimiter(math_node)
+            self._repair_leading_matrix_delimiter(math_node)
             if display:
                 self._tune_display_nary_style(math_node)
 
@@ -286,7 +328,16 @@ class MarkdownToDocxConverter:
                 yield node
 
     def _repair_nary_operand(self, omath: etree._Element) -> None:
-        children = list(omath)
+        changed = True
+        while changed:
+            changed = False
+            for parent in omath.iter():
+                if self._repair_nary_operand_in_parent(parent):
+                    changed = True
+                    break
+
+    def _repair_nary_operand_in_parent(self, parent: etree._Element) -> bool:
+        children = list(parent)
         for idx, child in enumerate(children):
             if self._tag_name(child) != "nary":
                 continue
@@ -299,14 +350,57 @@ class MarkdownToDocxConverter:
             if idx + 1 >= len(children):
                 continue
 
-            next_expr = children[idx + 1]
-            if self._tag_name(next_expr) in {"dPr", "ctrlPr"}:
+            collected = self._collect_nary_operand_siblings(parent, idx + 1)
+            if not collected:
                 continue
-            if self._tag_name(next_expr) == "r" and self._is_operator_run(next_expr):
-                continue
-            e_node.append(deepcopy(next_expr))
-            omath.remove(next_expr)
-            children = list(omath)
+            for operand_node in collected:
+                e_node.append(operand_node)
+            return True
+        return False
+
+    def _collect_nary_operand_siblings(self, parent: etree._Element, start_index: int) -> List[etree._Element]:
+        collected: List[etree._Element] = []
+
+        while start_index < len(parent):
+            sibling = parent[start_index]
+            tag = self._tag_name(sibling)
+            if tag in {"dPr", "ctrlPr", "nary"}:
+                break
+
+            if tag == "r":
+                text = self._get_run_text(sibling)
+                if self._starts_with_nary_stop_operator(text):
+                    break
+
+                prefix, remainder = self._split_trailing_nary_stop_operator(text)
+                if prefix:
+                    operand_run = deepcopy(sibling)
+                    self._set_run_text(operand_run, prefix)
+                    collected.append(operand_run)
+
+                    if remainder:
+                        self._set_run_text(sibling, remainder)
+                        break
+                    parent.remove(sibling)
+                    continue
+
+                break
+
+            collected.append(sibling)
+            parent.remove(sibling)
+
+        return collected
+
+    def _starts_with_nary_stop_operator(self, text: str) -> bool:
+        return bool(text and text.lstrip().startswith(("+", "-", "−", "±", "∓")))
+
+    def _split_trailing_nary_stop_operator(self, text: str) -> Tuple[str, str]:
+        match = re.search(r"([+\-−±∓])\s*$", text or "")
+        if not match:
+            return text, ""
+        prefix = text[: match.start(1)].rstrip()
+        remainder = text[match.start(1) :]
+        return prefix, remainder
 
     def _repair_matrix_delimiter(self, omath: etree._Element) -> None:
         bracket_pairs = {"(": ")", "[": "]", "{": "}", "|": "|"}
@@ -346,6 +440,87 @@ class MarkdownToDocxConverter:
 
                 changed = True
                 break
+
+    def _repair_leading_matrix_delimiter(self, omath: etree._Element) -> None:
+        target_tags = {"m", "eqarr"}
+        changed = True
+
+        while changed:
+            changed = False
+            children = list(omath)
+            for idx, expr_node in enumerate(children):
+                if self._tag_name(expr_node) not in target_tags or idx == 0:
+                    continue
+
+                left_node = children[idx - 1]
+                left = self._peek_open_bracket_from_run(left_node)
+                if left is None:
+                    continue
+
+                left_bracket, left_remain = left
+                if left_bracket not in {"{", "[", "(", "|"}:
+                    continue
+
+                delim = self._build_delimiter_omml(left_bracket, "", expr_node)
+                omath.replace(expr_node, delim)
+
+                self._set_run_text(left_node, left_remain)
+                if not left_remain:
+                    omath.remove(left_node)
+
+                changed = True
+                break
+
+    def _apply_aligned_matrix_layout(self, omml_root: etree._Element) -> None:
+        for matrix in omml_root.xpath(".//*[local-name()='m']"):
+            column_count = self._matrix_column_count(matrix)
+            if column_count <= 1:
+                continue
+
+            alignments = ["right"] + ["left"] * (column_count - 1)
+            if column_count >= 3:
+                alignments[-1] = "right"
+            self._set_matrix_column_alignments(matrix, alignments)
+
+    def _apply_cases_matrix_layout(self, omml_root: etree._Element) -> None:
+        for matrix in omml_root.xpath(".//*[local-name()='m']"):
+            column_count = self._matrix_column_count(matrix)
+            if column_count <= 0:
+                continue
+            self._set_matrix_column_alignments(matrix, ["left"] * column_count)
+
+    def _matrix_column_count(self, matrix: etree._Element) -> int:
+        counts = [len(row.xpath("./*[local-name()='e']")) for row in matrix.xpath("./*[local-name()='mr']")]
+        return max(counts, default=0)
+
+    def _set_matrix_column_alignments(self, matrix: etree._Element, alignments: List[str]) -> None:
+        matrix_pr = None
+        for child in matrix:
+            if self._tag_name(child) == "mpr":
+                matrix_pr = child
+                break
+
+        if matrix_pr is None:
+            matrix_pr = OxmlElement("m:mPr")
+            matrix.insert(0, matrix_pr)
+
+        for child in list(matrix_pr):
+            if self._tag_name(child) == "mcs":
+                matrix_pr.remove(child)
+
+        mcs = OxmlElement("m:mcs")
+        for alignment in alignments:
+            mc = OxmlElement("m:mc")
+            mc_pr = OxmlElement("m:mcPr")
+            count = OxmlElement("m:count")
+            count.set(qn("m:val"), "1")
+            mc_jc = OxmlElement("m:mcJc")
+            mc_jc.set(qn("m:val"), alignment)
+            mc_pr.append(count)
+            mc_pr.append(mc_jc)
+            mc.append(mc_pr)
+            mcs.append(mc)
+        matrix_pr.append(mcs)
 
     def _peek_open_bracket_from_run(self, node: etree._Element) -> Optional[Tuple[str, str]]:
         if self._tag_name(node) != "r":
@@ -426,7 +601,7 @@ class MarkdownToDocxConverter:
             return None
 
         src = src.strip()
-        if src.startswith("http://") or src.startswith("https://") or src.startswith("data:"):
+        if self._is_remote_url(src) or src.startswith("data:"):
             return None
 
         image_path = Path(src)
@@ -627,16 +802,34 @@ class MarkdownToDocxConverter:
         def create_token(latex: str, display: bool) -> str:
             token_type = BLOCK_MATH_TOKEN if display else INLINE_MATH_TOKEN
             token = f"{token_type}TOK{len(self._math_tokens)}END"
+            if display:
+                latex = self._strip_blockquote_markers(latex)
             self._math_tokens[token] = {"latex": latex.strip(), "display": display}
             if display:
                 return f"\n\n{token}\n\n"
             return token
+
+        def blockquote_display_replacer(match: re.Match[str]) -> str:
+            prefix = match.group("prefix")
+            body = self._strip_blockquote_markers(match.group("body"))
+            token = create_token(body, True).strip()
+            return f"{prefix}\n{prefix}{token}\n{prefix}"
+
+        blockquote_display_pattern = re.compile(
+            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)\\\[[ \t]*\n"
+            r"(?P<body>.*?)[ \t]*>[ \t]*\\\][ \t]*$"
+        )
+        text = blockquote_display_pattern.sub(blockquote_display_replacer, text)
 
         text = re.sub(r"\$\$(.+?)\$\$", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
         text = re.sub(r"\\\[(.+?)\\\]", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
         text = re.sub(r"\\\((.+?)\\\)", lambda m: create_token(m.group(1), False), text)
         text = re.sub(r"(?<!\\)\$(?!\$)([^\n]+?)(?<!\\)\$", lambda m: create_token(m.group(1), False), text)
         return text
+
+    def _strip_blockquote_markers(self, text: str) -> str:
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        return "\n".join(re.sub(r"^[ \t]*>[ \t]?", "", line) for line in lines).strip()
 
     def _split_reset_ordered_lists(self, text: str) -> str:
         ordered_item_pattern = re.compile(r"^(\s*)(\d+)([.)])\s+")
@@ -743,8 +936,11 @@ class MarkdownToDocxConverter:
             return
 
         if tag == "blockquote":
+            start_index = len(getattr(container, "paragraphs", []))
             for child in node:
                 self._render_block(child, container, config)
+            for para in getattr(container, "paragraphs", [])[start_index:]:
+                self._apply_blockquote_paragraph_format(para)
             return
 
         if tag == "table":
@@ -1204,7 +1400,51 @@ class MarkdownToDocxConverter:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.first_line_indent = Pt(0)
 
+    def _apply_blockquote_paragraph_format(self, paragraph) -> None:
+        paragraph.paragraph_format.left_indent = Pt(BLOCKQUOTE_LEFT_INDENT_PT)
+        paragraph.paragraph_format.right_indent = Pt(BLOCKQUOTE_RIGHT_INDENT_PT)
+        if self._paragraph_contains_display_math(paragraph):
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            self._set_paragraph_math_justification(paragraph, "center")
+        else:
+            if paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+        paragraph.paragraph_format.first_line_indent = Pt(BLOCKQUOTE_FIRST_LINE_INDENT_PT)
+        paragraph.paragraph_format.space_before = Pt(BLOCKQUOTE_SPACE_BEFORE_PT)
+        paragraph.paragraph_format.space_after = Pt(BLOCKQUOTE_SPACE_AFTER_PT)
+        self._set_paragraph_shading(paragraph, BLOCKQUOTE_SHADING)
+        self._set_paragraph_left_border(paragraph, BLOCKQUOTE_BORDER_COLOR)
+
+    def _paragraph_contains_display_math(self, paragraph) -> bool:
+        return bool(paragraph._p.xpath(".//*[local-name()='oMathPara']"))
+
+    def _set_paragraph_math_justification(self, paragraph, justification: str) -> None:
+        for omathpara in paragraph._p.xpath(".//*[local-name()='oMathPara']"):
+            self._set_omathpara_justification(omathpara, justification)
+
+    def _set_paragraph_left_border(self, paragraph, color: str) -> None:
+        p_pr = paragraph._p.get_or_add_pPr()
+        p_bdr = p_pr.find(qn("w:pBdr"))
+        if p_bdr is None:
+            p_bdr = OxmlElement("w:pBdr")
+            p_pr.append(p_bdr)
+
+        existing = p_bdr.find(qn("w:left"))
+        if existing is not None:
+            p_bdr.remove(existing)
+
+        left = OxmlElement("w:left")
+        left.set(qn("w:val"), "single")
+        left.set(qn("w:sz"), BLOCKQUOTE_BORDER_SIZE)
+        left.set(qn("w:space"), str(BLOCKQUOTE_BORDER_SPACE_PT))
+        left.set(qn("w:color"), color)
+        p_bdr.append(left)
+
     def _set_omathpara_center(self, omathpara_node: etree._Element) -> None:
+        self._set_omathpara_justification(omathpara_node, "center")
+
+    def _set_omathpara_justification(self, omathpara_node: etree._Element, justification: str) -> None:
         if self._tag_name(omathpara_node) != "omathpara":
             return
 
@@ -1226,25 +1466,31 @@ class MarkdownToDocxConverter:
         if jc is None:
             jc = OxmlElement("m:jc")
             para_pr.append(jc)
-        jc.set(qn("m:val"), "center")
+        jc.set(qn("m:val"), justification)
 
     def _insert_image(self, paragraph, image_node: etree._Element, config: AppConfig) -> None:
         src = image_node.get("src", "").strip()
-        resolved = self.resolve_image_path(src, config.asset_root)
+        temp_paths: List[Path] = []
 
-        if resolved is None or not resolved.exists():
-            if src:
-                warning = f"图片未找到: {src}（资源根目录: {config.asset_root}）"
-                self.last_warnings.append(warning)
-                run = paragraph.add_run(f"[{warning}]")
-                self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
-            return
-
-        picture_path = resolved
-        temp_path: Optional[Path] = None
         try:
+            if self._is_remote_url(src):
+                resolved = self._download_remote_image(src)
+                temp_paths.append(resolved)
+            else:
+                resolved = self.resolve_image_path(src, config.asset_root)
+
+            if resolved is None or not resolved.exists():
+                if src:
+                    warning = f"图片未找到: {src}（资源根目录: {config.asset_root}）"
+                    self.last_warnings.append(warning)
+                    run = paragraph.add_run(f"[{warning}]")
+                    self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
+                return
+
+            picture_path = resolved
             if resolved.suffix.lower() == ".svg":
                 picture_path, temp_path = self._convert_svg_to_png(resolved)
+                temp_paths.append(temp_path)
 
             width_inches = self._parse_image_width(image_node.get("width"), picture_path)
             run = paragraph.add_run()
@@ -1254,18 +1500,44 @@ class MarkdownToDocxConverter:
                 run.add_picture(str(picture_path))
         except Exception as exc:  # noqa: BLE001
             detail = self._error_detail(exc)
-            if resolved.suffix.lower() == ".svg":
+            suffix = Path(urllib.parse.urlparse(src).path).suffix.lower() if self._is_remote_url(src) else Path(src).suffix.lower()
+            if suffix == ".svg":
                 detail = f"SVG 图片自动转换失败，请安装 cairosvg/Cairo 或先转为 PNG/JPG。{detail}"
-            warning = f"图片插入失败: {src} -> {resolved}（{detail}）"
+            warning = f"图片插入失败: {src}（{detail}）"
             self.last_warnings.append(warning)
             run = paragraph.add_run(f"[{warning}]")
             self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
         finally:
-            if temp_path is not None:
+            for temp_path in temp_paths:
                 try:
                     temp_path.unlink(missing_ok=True)
                 except Exception:
                     pass
+
+    def _is_remote_url(self, src: str) -> bool:
+        return src.lower().startswith(("http://", "https://"))
+
+    def _download_remote_image(self, src: str) -> Path:
+        request = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = response.read()
+            content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+
+        suffix = Path(urllib.parse.urlparse(src).path).suffix.lower()
+        if not suffix:
+            suffix = {
+                "image/jpeg": ".jpg",
+                "image/jpg": ".jpg",
+                "image/png": ".png",
+                "image/gif": ".gif",
+                "image/bmp": ".bmp",
+                "image/tiff": ".tiff",
+                "image/svg+xml": ".svg",
+            }.get(content_type, ".img")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(data)
+            return Path(temp_file.name)
 
     def _convert_svg_to_png(self, image_path: Path) -> Tuple[Path, Path]:
         try:
