@@ -314,6 +314,19 @@ class MarkdownToDocxConverter:
         return "".join(node.itertext())
 
     def _mathml_space_text(self, width: str) -> str:
+        stable_space = "\u00a0"
+        named_spaces = {
+            "veryverythinmathspace": 1,
+            "verythinmathspace": 1,
+            "thinmathspace": 1,
+            "mediummathspace": 1,
+            "thickmathspace": 1,
+            "verythickmathspace": 2,
+            "veryverythickmathspace": 2,
+        }
+        if width in named_spaces:
+            return stable_space * named_spaces[width]
+
         if width.endswith("em"):
             try:
                 amount = float(width[:-2])
@@ -323,12 +336,12 @@ class MarkdownToDocxConverter:
             amount = 1.0
 
         if amount >= 1.5:
-            return "\u2003\u2003"
+            return stable_space * 8
         if amount >= 0.75:
-            return "\u2003"
+            return stable_space * 4
         if amount >= 0.4:
-            return "\u2002"
-        return " "
+            return stable_space * 2
+        return stable_space
 
     def _normalize_omml_math(self, omml_root: etree._Element, display: bool) -> None:
         for math_node in self._iter_omath_nodes(omml_root):
@@ -340,6 +353,13 @@ class MarkdownToDocxConverter:
             self._repair_matrix_delimiter(math_node)
             self._repair_leading_matrix_delimiter(math_node)
             self._tune_nary_style(math_node)
+            self._preserve_omml_text_spaces(math_node)
+
+    def _preserve_omml_text_spaces(self, omath: etree._Element) -> None:
+        for text_node in omath.xpath(".//*[local-name()='t']"):
+            text = text_node.text or ""
+            if text.startswith(" ") or text.endswith(" "):
+                text_node.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
 
     def _tune_nary_style(self, omath: etree._Element) -> None:
         for nary in omath.xpath(".//*[local-name()='nary']"):
