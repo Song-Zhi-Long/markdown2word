@@ -249,12 +249,23 @@ class MarkdownToDocxConverter:
     def _convert_mathml_spaces(self, root: etree._Element) -> None:
         for node in root.xpath(".//*[local-name()='mspace']"):
             width = (node.get("width") or "").strip().lower()
+            parent = node.getparent()
+            if parent is None:
+                continue
+
+            if self._is_negative_mathml_space(width):
+                parent.remove(node)
+                continue
+
             replacement = etree.Element(f"{MATHML_TAG}mtext")
             replacement.text = self._mathml_space_text(width)
 
-            parent = node.getparent()
-            if parent is not None:
-                parent.replace(node, replacement)
+            parent.replace(node, replacement)
+
+    def _is_negative_mathml_space(self, width: str) -> bool:
+        if width.startswith("negative"):
+            return True
+        return bool(re.match(r"^-\d+(?:\.\d+)?(?:em|ex|px|pt|pc|in|cm|mm)?$", width))
 
     def _convert_mathml_stretchy_fences(self, node: etree._Element) -> None:
         for child in list(node):
