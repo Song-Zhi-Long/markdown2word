@@ -14,3 +14,19 @@
 ---
 
 **提示**：在支持任务列表的编辑器（如 GitHub、Typora、Obsidian）中，你可以直接**点击方框**来切换勾选状态。
+
+
+## :calendar: TODO
+
+- [x] Release evaluation code.
+- [x] Release training code.
+- [x] Release the metric-scale version, see branch [alpha](https://github.com/NIRVANALAN/STream3R/tree/alpha).
+
+
+## :page_with_curl: License
+
+This project is licensed under <a rel="license" href="./LICENSE">NTU S-Lab License 1.0</a>. Redistribution and use should follow this license.
+
+## :pencil: Citation
+
+If you find our code or paper helps, please consider citing [bib](https://nirvanalan.github.io/projects/stream3r/static/bibtex.txt):
