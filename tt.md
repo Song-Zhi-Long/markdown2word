@@ -2,31 +2,20 @@
 
 ## 已完成的任务
 - [x] 完成季度项目报告
-- [x] 回复所有重要邮件
-- [x] 更新团队周报
++ [x] 回复所有重要邮件
+* [x] 更新团队周报
 
 ## 待完成的任务
 - [ ] 购买本周生活用品
-- [ ] 健身房锻炼 1 小时
-- [ ] 阅读《高效能人士的七个习惯》第 3 章
++ [ ] 健身房锻炼 1 小时
+* [ ] 阅读《高效能人士的七个习惯》第 3 章
 - [ ] 整理桌面文件
 
 ---
 
 **提示**：在支持任务列表的编辑器（如 GitHub、Typora、Obsidian）中，你可以直接**点击方框**来切换勾选状态。
 
+- 完成季度项目报告
++ 回复所有重要邮件
+* 更新团队周报、
 
-## :calendar: TODO
-
-- [x] Release evaluation code.
-- [x] Release training code.
-- [x] Release the metric-scale version, see branch [alpha](https://github.com/NIRVANALAN/STream3R/tree/alpha).
-
-
-## :page_with_curl: License
-
-This project is licensed under <a rel="license" href="./LICENSE">NTU S-Lab License 1.0</a>. Redistribution and use should follow this license.
-
-## :pencil: Citation
-
-If you find our code or paper helps, please consider citing [bib](https://nirvanalan.github.io/projects/stream3r/static/bibtex.txt):
