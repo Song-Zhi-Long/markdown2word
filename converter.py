@@ -314,16 +314,142 @@ class MarkdownToDocxConverter:
     def _normalize_omml_math(self, omml_root: etree._Element, display: bool) -> None:
         for math_node in self._iter_omath_nodes(omml_root):
             self._repair_nary_operand(math_node)
+            if not display:
+                self._convert_inline_nary_to_scripts(math_node)
+            else:
+                self._convert_display_nary_runs(math_node)
             self._repair_matrix_delimiter(math_node)
             self._repair_leading_matrix_delimiter(math_node)
-            if display:
-                self._tune_display_nary_style(math_node)
+            self._tune_nary_style(math_node)
 
-    def _tune_display_nary_style(self, omath: etree._Element) -> None:
+    def _tune_nary_style(self, omath: etree._Element) -> None:
         for nary in omath.xpath(".//*[local-name()='nary']"):
             grow_nodes = nary.xpath("./*[local-name()='naryPr']/*[local-name()='grow']")
             for grow in grow_nodes:
                 grow.set(qn("m:val"), "0")
+
+    def _convert_inline_nary_to_scripts(self, omath: etree._Element) -> None:
+        nary_symbols = {"∑", "∏", "∐", "⋃", "⋂", "⨁", "⨂", "∨", "∧", "⨆"}
+
+        for nary in list(omath.xpath(".//*[local-name()='nary']")):
+            symbol = self._nary_symbol(nary)
+            if symbol not in nary_symbols:
+                continue
+
+            parent = nary.getparent()
+            if parent is None:
+                continue
+
+            sub_node = self._first_child_by_local_name(nary, "sub")
+            sup_node = self._first_child_by_local_name(nary, "sup")
+            e_node = self._first_child_by_local_name(nary, "e")
+            if sub_node is None and sup_node is None:
+                continue
+
+            script_node = self._build_inline_nary_script(symbol, sub_node, sup_node)
+            insert_index = parent.index(nary)
+            parent.replace(nary, script_node)
+
+            if e_node is None:
+                continue
+            for operand_child in list(e_node):
+                insert_index += 1
+                parent.insert(insert_index, operand_child)
+
+    def _convert_display_nary_runs(self, omath: etree._Element) -> None:
+        nary_symbols = {"∑", "∏", "∐", "⋃", "⋂", "⨁", "⨂", "∨", "∧", "⨆"}
+        changed = True
+
+        while changed:
+            changed = False
+            for parent in omath.iter():
+                children = list(parent)
+                for idx, child in enumerate(children):
+                    if self._tag_name(child) != "r":
+                        continue
+
+                    symbol = self._get_run_text(child).strip()
+                    if symbol not in nary_symbols:
+                        continue
+
+                    operand_nodes = self._collect_nary_operand_siblings(parent, idx + 1)
+                    if not operand_nodes:
+                        continue
+
+                    nary = self._build_display_nary(symbol, operand_nodes)
+                    parent.replace(child, nary)
+                    changed = True
+                    break
+                if changed:
+                    break
+
+    def _build_display_nary(self, symbol: str, operand_nodes: List[etree._Element]) -> etree._Element:
+        nary = OxmlElement("m:nary")
+        nary_pr = OxmlElement("m:naryPr")
+
+        chr_node = OxmlElement("m:chr")
+        chr_node.set(qn("m:val"), symbol)
+        lim_loc = OxmlElement("m:limLoc")
+        lim_loc.set(qn("m:val"), "undOvr")
+        grow = OxmlElement("m:grow")
+        grow.set(qn("m:val"), "0")
+        sub_hide = OxmlElement("m:subHide")
+        sub_hide.set(qn("m:val"), "on")
+        sup_hide = OxmlElement("m:supHide")
+        sup_hide.set(qn("m:val"), "on")
+
+        nary_pr.append(chr_node)
+        nary_pr.append(lim_loc)
+        nary_pr.append(grow)
+        nary_pr.append(sub_hide)
+        nary_pr.append(sup_hide)
+        nary.append(nary_pr)
+
+        e_node = OxmlElement("m:e")
+        for operand_node in operand_nodes:
+            e_node.append(operand_node)
+        nary.append(e_node)
+        return nary
+
+    def _nary_symbol(self, nary: etree._Element) -> str:
+        chr_nodes = nary.xpath("./*[local-name()='naryPr']/*[local-name()='chr']")
+        if not chr_nodes:
+            return ""
+        return chr_nodes[0].get(qn("m:val"), "")
+
+    def _first_child_by_local_name(self, node: etree._Element, local_name: str) -> Optional[etree._Element]:
+        for child in node:
+            if self._tag_name(child) == local_name:
+                return child
+        return None
+
+    def _build_inline_nary_script(
+        self,
+        symbol: str,
+        sub_node: Optional[etree._Element],
+        sup_node: Optional[etree._Element],
+    ) -> etree._Element:
+        if sub_node is not None and sup_node is not None:
+            script = OxmlElement("m:sSubSup")
+        elif sub_node is not None:
+            script = OxmlElement("m:sSub")
+        else:
+            script = OxmlElement("m:sSup")
+
+        base = OxmlElement("m:e")
+        run = OxmlElement("m:r")
+        text = OxmlElement("m:t")
+        text.text = symbol
+        run.append(text)
+        base.append(run)
+        script.append(base)
+
+        if sub_node is not None:
+            script.append(deepcopy(sub_node))
+        if sup_node is not None:
+            script.append(deepcopy(sup_node))
+
+        return script
 
     def _iter_omath_nodes(self, root: etree._Element):
         local = self._tag_name(root)
