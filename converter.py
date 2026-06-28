@@ -776,10 +776,66 @@ class MarkdownToDocxConverter:
 
     def _prepare_markdown(self, text: str) -> str:
         masked_text, code_tokens = self._mask_code_regions(text)
-        list_ready_text = self._split_reset_ordered_lists(masked_text)
+        indent_ready_text = self._normalize_two_space_list_indents(masked_text)
+        boundary_ready_text = self._normalize_markdown_block_boundaries(indent_ready_text)
+        list_ready_text = self._split_reset_ordered_lists(boundary_ready_text)
         caption_ready_text = self._merge_caption_headings(list_ready_text)
         math_ready_text = self._extract_math_tokens(caption_ready_text)
         return self._restore_tokens(math_ready_text, code_tokens)
+
+    def _normalize_two_space_list_indents(self, text: str) -> str:
+        normalized_lines: List[str] = []
+        list_item_pattern = re.compile(r"^([ \t]*)([-+*]\s+|\d+[.)]\s+)(.*)$")
+
+        for line in text.splitlines():
+            match = list_item_pattern.match(line)
+            if not match:
+                normalized_lines.append(line)
+                continue
+
+            raw_indent, marker, rest = match.groups()
+            indent_width = len(raw_indent.replace("\t", "    "))
+            normalized_level = indent_width // 2
+            normalized_lines.append(f"{' ' * (normalized_level * 4)}{marker}{rest}")
+
+        return "\n".join(normalized_lines)
+
+    def _normalize_markdown_block_boundaries(self, text: str) -> str:
+        lines = text.splitlines()
+        result: List[str] = []
+
+        for line in lines:
+            if result and self._needs_blank_before_markdown_block(line, result):
+                result.append("")
+            result.append(line)
+
+        return "\n".join(result)
+
+    def _needs_blank_before_markdown_block(self, line: str, previous_lines: List[str]) -> bool:
+        if not line.strip():
+            return False
+
+        prev_index = len(previous_lines) - 1
+        while prev_index >= 0 and not previous_lines[prev_index].strip():
+            prev_index -= 1
+
+        if prev_index < 0 or prev_index != len(previous_lines) - 1:
+            return False
+
+        previous = previous_lines[prev_index]
+        if self._is_markdown_list_item(line):
+            return not self._is_markdown_list_item(previous)
+
+        if self._is_markdown_horizontal_rule(line):
+            return True
+
+        return False
+
+    def _is_markdown_list_item(self, line: str) -> bool:
+        return bool(re.match(r"^[ \t]*(?:[-+*]\s+|\d+[.)]\s+)", line))
+
+    def _is_markdown_horizontal_rule(self, line: str) -> bool:
+        return bool(re.match(r"^[ \t]{0,3}(-[ \t]*){3,}$", line))
 
     def _merge_caption_headings(self, text: str) -> str:
         lines = text.splitlines()
@@ -1059,7 +1115,7 @@ class MarkdownToDocxConverter:
             return
 
         if tag == "hr":
-            container.add_paragraph("-" * 40)
+            self._render_horizontal_rule(container)
             return
 
         for child in node:
@@ -1088,7 +1144,8 @@ class MarkdownToDocxConverter:
 
         for li in node.xpath("./li"):
             para = container.add_paragraph()
-            marker = f"{next_number}." if ordered else self._bullet_prefix(level)
+            task_state = None if ordered else self._extract_task_state(li)
+            marker = f"{next_number}." if ordered else self._task_marker(task_state) if task_state is not None else self._bullet_prefix(level)
             prefix = f"{marker} \t"
             self._configure_list_paragraph(para, level, marker_text=f"{marker} ")
             prefix_run = para.add_run(prefix)
@@ -1100,11 +1157,36 @@ class MarkdownToDocxConverter:
             for nested in li:
                 nested_tag = self._tag_name(nested)
                 if nested_tag in {"ul", "ol"}:
-                    self._render_list(nested, container, config, ordered=(nested_tag == "ol"), level=min(level + 1, 3))
+                    self._render_list(nested, container, config, ordered=(nested_tag == "ol"), level=level + 1)
 
     def _render_list_item_inline(self, li: etree._Element, paragraph, container, config: AppConfig) -> None:
         base_style = TextStyle(size_pt=BODY_SIZE_PT)
         self._render_inline_node(li, paragraph, container, config, base_style)
+
+    def _extract_task_state(self, li: etree._Element) -> Optional[bool]:
+        checkbox = li.find("./input")
+        if checkbox is not None and (checkbox.get("type") or "").lower() == "checkbox":
+            checkbox.getparent().remove(checkbox)
+            return checkbox.get("checked") is not None
+
+        text_owner = li
+        first_text = li.text or ""
+        if not first_text.strip():
+            first_paragraph = li.find("./p")
+            if first_paragraph is not None:
+                text_owner = first_paragraph
+                first_text = first_paragraph.text or ""
+
+        task_text = self._normalize_inline_text(first_text)
+        match = re.match(r"^\s*\[([xX ])\]\s*", task_text)
+        if not match:
+            return None
+
+        text_owner.text = re.sub(r"^\s*\[[xX ]\]\s*", "", first_text, count=1)
+        return match.group(1).lower() == "x"
+
+    def _task_marker(self, checked: Optional[bool]) -> str:
+        return "☑" if checked else "☐"
 
     def _render_table(self, table_node: etree._Element, container, config: AppConfig) -> None:
         rows = table_node.xpath("./thead/tr|./tbody/tr|./tfoot/tr|./tr")
@@ -1159,6 +1241,8 @@ class MarkdownToDocxConverter:
             child_style = style.copy()
 
             if child_tag in {"ul", "ol"}:
+                continue
+            if child_tag == "input" and (child.get("type") or "").lower() == "checkbox":
                 continue
             if child_tag in {"strong", "b"}:
                 child_style.bold = True
@@ -1608,6 +1692,30 @@ class MarkdownToDocxConverter:
         left.set(qn("w:space"), str(BLOCKQUOTE_BORDER_SPACE_PT))
         left.set(qn("w:color"), color)
         p_bdr.append(left)
+
+    def _render_horizontal_rule(self, container) -> None:
+        paragraph = container.add_paragraph()
+        paragraph.paragraph_format.first_line_indent = Pt(0)
+        paragraph.paragraph_format.space_before = Pt(6)
+        paragraph.paragraph_format.space_after = Pt(6)
+        paragraph.paragraph_format.line_spacing = Pt(1)
+
+        p_pr = paragraph._p.get_or_add_pPr()
+        p_bdr = p_pr.find(qn("w:pBdr"))
+        if p_bdr is None:
+            p_bdr = OxmlElement("w:pBdr")
+            p_pr.append(p_bdr)
+
+        bottom = p_bdr.find(qn("w:bottom"))
+        if bottom is not None:
+            p_bdr.remove(bottom)
+
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "8")
+        bottom.set(qn("w:space"), "1")
+        bottom.set(qn("w:color"), "A6A6A6")
+        p_bdr.append(bottom)
 
     def _set_omathpara_center(self, omathpara_node: etree._Element) -> None:
         self._set_omathpara_justification(omathpara_node, "center")
