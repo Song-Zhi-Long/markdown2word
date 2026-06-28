@@ -20,7 +20,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Cm, Inches, Pt, RGBColor
 from latex2mathml.converter import convert as latex_to_mathml
 from lxml import etree, html as lxml_html
 from PIL import Image
@@ -77,6 +77,8 @@ H3_SIZE_PT = 12.0
 H4_SIZE_PT = 12.0
 H5_SIZE_PT = 12.0
 H6_SIZE_PT = 12.0
+A4_WIDTH_CM = 21.0
+A4_HEIGHT_CM = 29.7
 BODY_SIZE_PT = 12.0
 CAPTION_SIZE_PT = 10.5
 CODE_SIZE_PT = 10.5
@@ -156,6 +158,7 @@ class MarkdownToDocxConverter:
 
         document = Document()
         self._document = document
+        self._configure_document_page(document)
         self._configure_document_styles(document)
 
         root = lxml_html.fragment_fromstring(html_text, create_parent="div")
@@ -165,6 +168,11 @@ class MarkdownToDocxConverter:
         output_path = output_dir / self._build_output_filename(markdown_text, config)
         document.save(str(output_path))
         return str(output_path)
+
+    def _configure_document_page(self, document: _DocumentType) -> None:
+        for section in document.sections:
+            section.page_width = Cm(A4_WIDTH_CM)
+            section.page_height = Cm(A4_HEIGHT_CM)
 
     def latex_to_omml(self, latex: str, display: bool) -> etree._Element:
         normalized_latex = self._preprocess_latex_for_math(latex, display)
