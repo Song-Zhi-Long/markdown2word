@@ -66,10 +66,17 @@ SCRIPT_MATH_CHARS = {
 LATIN_FONT = "Times New Roman"
 CJK_FONT = "宋体"
 CODE_FONT = "Consolas"
+ARTICLE_TITLE_STYLE = "文章标题"
+TOC_TITLE_STYLE = "TOC 标题"
 
-H1_SIZE_PT = 16.0
-H2_SIZE_PT = 14.0
+ARTICLE_TITLE_SIZE_PT = 16.0
+TOC_TITLE_SIZE_PT = 16.0
+H1_SIZE_PT = 14.0
+H2_SIZE_PT = 12.0
 H3_SIZE_PT = 12.0
+H4_SIZE_PT = 12.0
+H5_SIZE_PT = 12.0
+H6_SIZE_PT = 12.0
 BODY_SIZE_PT = 12.0
 CAPTION_SIZE_PT = 10.5
 CODE_SIZE_PT = 10.5
@@ -625,21 +632,91 @@ class MarkdownToDocxConverter:
 
     def _configure_document_styles(self, document: _DocumentType) -> None:
         self._configure_style(document, "Normal", LATIN_FONT, CJK_FONT, BODY_SIZE_PT)
-        self._configure_style(document, "Heading 1", LATIN_FONT, CJK_FONT, H1_SIZE_PT)
-        self._configure_style(document, "Heading 2", LATIN_FONT, CJK_FONT, H2_SIZE_PT)
-        self._configure_style(document, "Heading 3", LATIN_FONT, CJK_FONT, H3_SIZE_PT)
-        self._configure_style(document, "Caption", LATIN_FONT, CJK_FONT, CAPTION_SIZE_PT)
+        self._configure_style(
+            document,
+            ARTICLE_TITLE_STYLE,
+            LATIN_FONT,
+            CJK_FONT,
+            ARTICLE_TITLE_SIZE_PT,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            outline_level=9,
+            bold=True,
+            font_color=RGBColor(0x36, 0x5F, 0x91),
+        )
+        self._configure_style(
+            document,
+            TOC_TITLE_STYLE,
+            LATIN_FONT,
+            CJK_FONT,
+            TOC_TITLE_SIZE_PT,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            outline_level=9,
+            bold=True,
+            font_color=RGBColor(0x36, 0x5F, 0x91),
+        )
+        self._configure_style(document, "Heading 1", LATIN_FONT, CJK_FONT, H1_SIZE_PT, outline_level=0)
+        self._configure_style(document, "Heading 2", LATIN_FONT, CJK_FONT, H2_SIZE_PT, outline_level=1)
+        self._configure_style(document, "Heading 3", LATIN_FONT, CJK_FONT, H3_SIZE_PT, outline_level=2)
+        self._configure_style(
+            document,
+            "Heading 4",
+            LATIN_FONT,
+            CJK_FONT,
+            H4_SIZE_PT,
+            outline_level=3,
+            font_color=RGBColor(0x24, 0x3F, 0x60),
+        )
+        self._configure_style(document, "Heading 5", LATIN_FONT, CJK_FONT, H5_SIZE_PT, outline_level=4)
+        self._configure_style(document, "Heading 6", LATIN_FONT, CJK_FONT, H6_SIZE_PT, outline_level=5)
+        self._configure_style(
+            document,
+            "Caption",
+            LATIN_FONT,
+            CJK_FONT,
+            CAPTION_SIZE_PT,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+            first_line_indent_pt=0,
+            outline_level=9,
+        )
         self._configure_hyperlink_style(document, "Hyperlink", RGBColor(5, 99, 193))
         self._configure_hyperlink_style(document, "FollowedHyperlink", RGBColor(149, 79, 114))
 
-    def _configure_style(self, document: _DocumentType, style_name: str, latin_font: str, east_asia_font: str, size_pt: float) -> None:
+    def _configure_style(
+        self,
+        document: _DocumentType,
+        style_name: str,
+        latin_font: str,
+        east_asia_font: str,
+        size_pt: float,
+        alignment: Optional[WD_ALIGN_PARAGRAPH] = None,
+        first_line_indent_pt: Optional[float] = None,
+        outline_level: Optional[int] = None,
+        bold: Optional[bool] = None,
+        font_color: Optional[RGBColor] = None,
+    ) -> None:
         try:
             style = document.styles[style_name]
         except KeyError:
-            return
+            style = document.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
 
         style.font.name = latin_font
         style.font.size = Pt(size_pt)
+        style.font.italic = False
+        if bold is not None:
+            style.font.bold = bold
+        if font_color is not None:
+            style.font.color.rgb = font_color
+        if alignment is not None and style.type == WD_STYLE_TYPE.PARAGRAPH:
+            style.paragraph_format.alignment = alignment
+        if first_line_indent_pt is not None and style.type == WD_STYLE_TYPE.PARAGRAPH:
+            style.paragraph_format.first_line_indent = Pt(first_line_indent_pt)
+
+        try:
+            style.hidden = False
+            style.quick_style = True
+            style.unhide_when_used = True
+        except AttributeError:
+            pass
 
         r_pr = style._element.get_or_add_rPr()
         r_fonts = r_pr.find(qn("w:rFonts"))
@@ -650,6 +727,32 @@ class MarkdownToDocxConverter:
         r_fonts.set(qn("w:hAnsi"), latin_font)
         r_fonts.set(qn("w:eastAsia"), east_asia_font)
         r_fonts.set(qn("w:cs"), latin_font)
+        for theme_attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme", "w:csTheme"):
+            attr_name = qn(theme_attr)
+            if attr_name in r_fonts.attrib:
+                del r_fonts.attrib[attr_name]
+        if font_color is not None:
+            color = r_pr.find(qn("w:color"))
+            if color is None:
+                color = OxmlElement("w:color")
+                r_pr.append(color)
+            color.set(qn("w:val"), str(font_color))
+            for theme_attr in ("w:themeColor", "w:themeTint", "w:themeShade"):
+                attr_name = qn(theme_attr)
+                if attr_name in color.attrib:
+                    del color.attrib[attr_name]
+
+        if outline_level is not None and style.type == WD_STYLE_TYPE.PARAGRAPH:
+            self._set_style_outline_level(style, outline_level)
+
+    def _set_style_outline_level(self, style, outline_level: int) -> None:
+        p_pr = style._element.get_or_add_pPr()
+        existing = p_pr.find(qn("w:outlineLvl"))
+        if existing is not None:
+            p_pr.remove(existing)
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), str(outline_level))
+        p_pr.append(outline)
 
     def _configure_hyperlink_style(self, document: _DocumentType, style_name: str, rgb_color: RGBColor) -> None:
         try:
@@ -876,12 +979,13 @@ class MarkdownToDocxConverter:
 
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             level = int(tag[1])
-            para = container.add_paragraph(style=f"Heading {level}")
+            style_name = self._markdown_heading_style_name(level)
+            para = container.add_paragraph(style=style_name)
             self._apply_alignment(para, node)
-            if level == 1 or self._is_abstract_title(node.text_content()):
+            if style_name == ARTICLE_TITLE_STYLE or self._is_abstract_title(node.text_content()):
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = Pt(0)
-            size = {1: H1_SIZE_PT, 2: H2_SIZE_PT, 3: H3_SIZE_PT}.get(level, BODY_SIZE_PT)
+            size = self._markdown_heading_size(level)
             self._render_inline_node(node, para, container, config, TextStyle(size_pt=size))
             return
 
@@ -1767,6 +1871,21 @@ class MarkdownToDocxConverter:
         if isinstance(node.tag, str):
             return node.tag.split("}")[-1].lower()
         return ""
+
+    def _markdown_heading_style_name(self, level: int) -> str:
+        if level <= 1:
+            return ARTICLE_TITLE_STYLE
+        return f"Heading {min(level - 1, 5)}"
+
+    def _markdown_heading_size(self, level: int) -> float:
+        return {
+            1: ARTICLE_TITLE_SIZE_PT,
+            2: H1_SIZE_PT,
+            3: H2_SIZE_PT,
+            4: H3_SIZE_PT,
+            5: H4_SIZE_PT,
+            6: H5_SIZE_PT,
+        }.get(level, BODY_SIZE_PT)
 
     def _clear_cell(self, cell) -> None:
         tc = cell._tc
