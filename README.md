@@ -26,6 +26,10 @@
   - 例如 `表3：XXX`、`图2：XXX`、`Table 1: XXX`、`表1 XXX`、`表1. XXX`
 - 有序列表按原文重新从 `1.` 开始
 - 转换完成后自动尝试打开生成的 Word 文档（Windows / macOS / Linux 图形界面）
+- SVG 图片会通过 `cairosvg` 自动转换为 PNG 后插入；如果转换失败，可以先手动把 SVG 转成 PNG/JPG
+- 如果希望转换完成后自动打开文档
+  - macOS 需要系统自带 `open`
+  - Linux 需要桌面环境和 `xdg-open`
 - setting.json中的
   - output_dir（输出目录），默认输出目录优先取用户的 Downloads，如果没有就尝试 下载，再不行就退回到用户主目录
   - asset_root（资源根目录），默认为当前工作目录，也就是你从哪里启动程序，默认资源根目录就指向哪里
@@ -56,14 +60,18 @@
 
 ## 环境要求
 
-- Python 3.10 及以上版本
+
+
+### 双击运行
+
 - 带图形界面的 Windows、macOS 或 Linux 环境
 - 电脑安装 Microsoft Office 并设为`.docx`的默认打开软件（wps打开的话公式阅读正常但可能复制粘贴格式会出问题）
+
+### 源码运行
+- Python 3.10 及以上版本
 - 推荐使用 conda 环境运行，Tkinter、Cairo 等底层依赖统一由 conda 管理
-- 如果希望转换完成后自动打开文档
-  - macOS 需要系统自带 `open`
-  - Linux 需要桌面环境和 `xdg-open`
-- SVG 图片会通过 `cairosvg` 自动转换为 PNG 后插入；如果转换失败，可以先手动把 SVG 转成 PNG/JPG
+- 电脑安装 Microsoft Office 并设为`.docx`的默认打开软件（wps打开的话公式阅读正常但可能复制粘贴格式会出问题）
+
 
 ## 运行方式
 
