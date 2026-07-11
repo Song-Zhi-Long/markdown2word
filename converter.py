@@ -62,6 +62,20 @@ SCRIPT_MATH_CHARS = {
     "𝒴": "Y",
     "𝒵": "Z",
 }
+LATEX_TEXT_SYMBOLS = {
+    r"\dagger": "†",
+    r"\ddagger": "‡",
+    r"\S": "§",
+    r"\P": "¶",
+    r"\ast": "*",
+    r"\star": "⋆",
+    r"\circ": "∘",
+    r"\bullet": "•",
+    r"\cdot": "·",
+    r"\times": "×",
+    r"\pm": "±",
+    r"\mp": "∓",
+}
 
 LATIN_FONT = "Times New Roman"
 CJK_FONT = "宋体"
@@ -186,17 +200,24 @@ class MarkdownToDocxConverter:
             raise ValueError("Math transform returned empty result.")
         omml_root = deepcopy(transformed.getroot())
         self._normalize_omml_math(omml_root, display=display)
-        if re.search(r"\\begin\{(?:aligned|align\*?|split)\}", latex):
+        if self._needs_aligned_matrix_layout(latex):
             self._apply_aligned_matrix_layout(omml_root)
         if re.search(r"\\begin\{cases\}", latex):
             self._apply_cases_matrix_layout(omml_root)
         return omml_root
+
+    def _needs_aligned_matrix_layout(self, latex: str) -> bool:
+        return bool(
+            re.search(r"\\begin\{(?:aligned|align\*?|split)\}", latex)
+            or re.search(r"\\begin\{array\}\{rl\}", latex)
+        )
 
     def _preprocess_latex_for_math(self, latex: str, display: bool) -> str:
         normalized = latex
 
         normalized = re.sub(r"\\\\\s*\[[^\]]+\]", r"\\\\", normalized)
         normalized = self._normalize_evaluation_bar_after_fraction(normalized)
+        normalized = self._convert_leading_empty_rl_arrays_to_aligned(normalized)
         normalized = self._convert_aligned_environments_to_arrays(normalized)
         if re.search(r"\\begin\{(?:aligned|align\*?|split)\}", normalized):
             normalized = re.sub(r"(?<!\\)&", "", normalized)
@@ -233,6 +254,133 @@ class MarkdownToDocxConverter:
             return f"\\begin{{array}}{{{column_spec}}}{body}\\end{{array}}"
 
         return pattern.sub(replacer, latex)
+
+    def _convert_leading_empty_rl_arrays_to_aligned(self, latex: str) -> str:
+        begin_marker = r"\begin{array}{rl}"
+        end_marker = r"\end{array}"
+        result: List[str] = []
+        position = 0
+
+        while True:
+            start = latex.find(begin_marker, position)
+            if start < 0:
+                result.append(latex[position:])
+                break
+
+            body_start = start + len(begin_marker)
+            end = self._find_matching_array_end(latex, body_start)
+            if end is None:
+                result.append(latex[position:])
+                break
+
+            body = latex[body_start:end]
+            replacement = self._convert_leading_empty_rl_array_body(body)
+            result.append(latex[position:start])
+            if replacement is None:
+                result.append(latex[start : end + len(end_marker)])
+            else:
+                result.append(replacement)
+            position = end + len(end_marker)
+
+        return "".join(result)
+
+    def _find_matching_array_end(self, latex: str, body_start: int) -> Optional[int]:
+        pattern = re.compile(r"\\(?P<kind>begin|end)\{array\}(?:\{[^{}]*\})?")
+        depth = 1
+        for match in pattern.finditer(latex, body_start):
+            if match.group("kind") == "begin":
+                depth += 1
+                continue
+            depth -= 1
+            if depth == 0:
+                return match.start()
+        return None
+
+    def _convert_leading_empty_rl_array_body(self, body: str) -> Optional[str]:
+        rows = self._split_latex_rows(body)
+        aligned_rows: List[str] = []
+
+        for row in rows:
+            stripped = row.strip()
+            if not stripped:
+                continue
+            if not stripped.startswith("&"):
+                return None
+
+            expression = stripped[1:].strip()
+            expression = self._strip_leading_latex_spacing(expression)
+            if expression.startswith("="):
+                aligned_rows.append(f"&{expression}")
+                continue
+
+            equals_index = self._find_top_level_equals(expression)
+            if equals_index < 0:
+                return None
+
+            left = expression[:equals_index].rstrip()
+            right = expression[equals_index + 1 :].lstrip()
+            aligned_rows.append(f"{left} &= {right}")
+
+        if not aligned_rows:
+            return None
+        return r"\begin{aligned}" + r"\\".join(aligned_rows) + r"\end{aligned}"
+
+    def _split_latex_rows(self, body: str) -> List[str]:
+        rows: List[str] = []
+        start = 0
+        index = 0
+        array_depth = 0
+
+        while index < len(body):
+            if body.startswith(r"\begin{array}", index):
+                array_depth += 1
+                index += len(r"\begin{array}")
+                continue
+            if body.startswith(r"\end{array}", index):
+                array_depth = max(0, array_depth - 1)
+                index += len(r"\end{array}")
+                continue
+            if array_depth == 0 and body.startswith(r"\\", index):
+                rows.append(body[start:index])
+                index += 2
+                start = index
+                continue
+            index += 1
+
+        rows.append(body[start:])
+        return rows
+
+    def _strip_leading_latex_spacing(self, latex: str) -> str:
+        return re.sub(r"^(?:\s|\\(?:qquad|quad|[,;:!]| ))+", "", latex)
+
+    def _find_top_level_equals(self, latex: str) -> int:
+        brace_depth = 0
+        array_depth = 0
+        index = 0
+
+        while index < len(latex):
+            if latex.startswith(r"\begin{array}", index):
+                array_depth += 1
+                index += len(r"\begin{array}")
+                continue
+            if latex.startswith(r"\end{array}", index):
+                array_depth = max(0, array_depth - 1)
+                index += len(r"\end{array}")
+                continue
+
+            char = latex[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth = max(0, brace_depth - 1)
+            elif char == "=" and brace_depth == 0 and array_depth == 0:
+                return index
+            index += 1
+
+        return -1
 
     def _normalize_mathml_tree(self, root: etree._Element) -> None:
         self._normalize_mathml_script_chars(root)
@@ -353,7 +501,21 @@ class MarkdownToDocxConverter:
             self._repair_matrix_delimiter(math_node)
             self._repair_leading_matrix_delimiter(math_node)
             self._tune_nary_style(math_node)
+            self._hide_empty_nary_operands(math_node)
             self._preserve_omml_text_spaces(math_node)
+
+    def _hide_empty_nary_operands(self, omath: etree._Element) -> None:
+        for nary in omath.xpath(".//*[local-name()='nary']"):
+            e_node = self._first_child_by_local_name(nary, "e")
+            if e_node is None or len(e_node) != 0 or "".join(e_node.itertext()).strip():
+                continue
+
+            run = OxmlElement("m:r")
+            text = OxmlElement("m:t")
+            text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            text.text = "\u2060"
+            run.append(text)
+            e_node.append(run)
 
     def _preserve_omml_text_spaces(self, omath: etree._Element) -> None:
         for text_node in omath.xpath(".//*[local-name()='t']"):
@@ -1743,11 +1905,25 @@ class MarkdownToDocxConverter:
 
     def _extract_equation_tag(self, latex: str) -> Tuple[str, Optional[str]]:
         match = re.search(r"\\tag\*?\{([^{}]+)\}\s*$", latex, flags=re.DOTALL)
-        if match is None:
+        if match is not None:
+            tag_text = match.group(1).strip()
+            cleaned_latex = latex[: match.start()].rstrip()
+            return self._format_equation_tag(cleaned_latex, tag_text)
+
+        spacing_command = r"\\(?:qquad|quad|[,;:!]|[ ])"
+        match = re.search(
+            rf"(?P<spacing>(?:\s|{spacing_command})+) (?P<tag>\([^()\r\n]{{1,32}}\))\s*$",
+            latex,
+            flags=re.VERBOSE,
+        )
+        if match is None or re.search(spacing_command, match.group("spacing")) is None:
             return latex, None
 
-        tag_text = match.group(1).strip()
+        tag_text = match.group("tag").strip()
         cleaned_latex = latex[: match.start()].rstrip()
+        return self._format_equation_tag(cleaned_latex, tag_text)
+
+    def _format_equation_tag(self, cleaned_latex: str, tag_text: str) -> Tuple[str, Optional[str]]:
         if not tag_text:
             return cleaned_latex, None
         if tag_text.startswith("(") and tag_text.endswith(")"):
@@ -1785,12 +1961,20 @@ class MarkdownToDocxConverter:
             value = match.group(2) or match.group(3) or ""
             if not value:
                 return None
-            tokens.append((match.group(1), value))
+            tokens.append((match.group(1), self._latex_text_symbols_to_unicode(value)))
             position = match.end()
 
         if position != len(stripped):
             return None
         return tokens or None
+
+    def _latex_text_symbols_to_unicode(self, text: str) -> str:
+        converted = text
+        for command, symbol in sorted(LATEX_TEXT_SYMBOLS.items(), key=lambda item: len(item[0]), reverse=True):
+            converted = converted.replace(command, symbol)
+        converted = re.sub(r"\\(?:qquad|quad)", " ", converted)
+        converted = re.sub(r"\\[,;:! ]", "", converted)
+        return converted
 
     def _apply_display_math_paragraph_format(self, paragraph) -> None:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
