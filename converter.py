@@ -501,21 +501,57 @@ class MarkdownToDocxConverter:
             self._repair_matrix_delimiter(math_node)
             self._repair_leading_matrix_delimiter(math_node)
             self._tune_nary_style(math_node)
-            self._hide_empty_nary_operands(math_node)
+            self._convert_omml_braces_to_group_chars(math_node)
             self._preserve_omml_text_spaces(math_node)
 
-    def _hide_empty_nary_operands(self, omath: etree._Element) -> None:
-        for nary in omath.xpath(".//*[local-name()='nary']"):
-            e_node = self._first_child_by_local_name(nary, "e")
-            if e_node is None or len(e_node) != 0 or "".join(e_node.itertext()).strip():
+    def _convert_omml_braces_to_group_chars(self, omath: etree._Element) -> None:
+        brace_specs = {
+            "limlow": ("⏟", "bot", "top"),
+            "limupp": ("⏞", "top", "bot"),
+        }
+
+        for limit_node in list(omath.xpath(".//*[local-name()='limLow' or local-name()='limUpp']")):
+            local_name = self._tag_name(limit_node)
+            expected_chr, pos, vert_jc = brace_specs.get(local_name, ("", "", ""))
+            if not expected_chr:
                 continue
 
-            run = OxmlElement("m:r")
-            text = OxmlElement("m:t")
-            text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-            text.text = "\u2060"
-            run.append(text)
-            e_node.append(run)
+            e_node = self._first_child_by_local_name(limit_node, "e")
+            lim_node = self._first_child_by_local_name(limit_node, "lim")
+            if e_node is None or lim_node is None:
+                continue
+            if "".join(lim_node.itertext()).strip() != expected_chr:
+                continue
+
+            group_chr = self._build_group_char_omml(expected_chr, pos, vert_jc, list(e_node))
+            parent = limit_node.getparent()
+            if parent is not None:
+                parent.replace(limit_node, group_chr)
+
+    def _build_group_char_omml(
+        self,
+        char: str,
+        pos: str,
+        vert_jc: str,
+        base_children: List[etree._Element],
+    ) -> etree._Element:
+        group_chr = OxmlElement("m:groupChr")
+        group_pr = OxmlElement("m:groupChrPr")
+
+        chr_node = OxmlElement("m:chr")
+        chr_node.set(qn("m:val"), char)
+        pos_node = OxmlElement("m:pos")
+        pos_node.set(qn("m:val"), pos)
+        vert_jc_node = OxmlElement("m:vertJc")
+        vert_jc_node.set(qn("m:val"), vert_jc)
+        group_pr.extend([chr_node, pos_node, vert_jc_node])
+        group_chr.append(group_pr)
+
+        e_node = OxmlElement("m:e")
+        for child in base_children:
+            e_node.append(child)
+        group_chr.append(e_node)
+        return group_chr
 
     def _preserve_omml_text_spaces(self, omath: etree._Element) -> None:
         for text_node in omath.xpath(".//*[local-name()='t']"):
@@ -672,7 +708,8 @@ class MarkdownToDocxConverter:
 
     def _repair_nary_operand_in_parent(self, parent: etree._Element) -> bool:
         children = list(parent)
-        for idx, child in enumerate(children):
+        for idx in range(len(children) - 1, -1, -1):
+            child = children[idx]
             if self._tag_name(child) != "nary":
                 continue
             e_nodes = child.xpath("./*[local-name()='e']")
@@ -694,23 +731,30 @@ class MarkdownToDocxConverter:
 
     def _collect_nary_operand_siblings(self, parent: etree._Element, start_index: int) -> List[etree._Element]:
         collected: List[etree._Element] = []
+        bracket_depth = 0
 
         while start_index < len(parent):
             sibling = parent[start_index]
             tag = self._tag_name(sibling)
-            if tag in {"dPr", "ctrlPr", "nary"}:
+            if tag in {"dPr", "ctrlPr"}:
+                break
+            if tag == "nary":
+                collected.append(sibling)
+                bracket_depth = max(0, bracket_depth + self._math_text_bracket_delta(self._math_node_text(sibling)))
+                parent.remove(sibling)
                 break
 
             if tag == "r":
                 text = self._get_run_text(sibling)
-                if self._starts_with_nary_stop_operator(text):
+                if bracket_depth == 0 and self._starts_with_nary_stop_operator(text):
                     break
 
-                prefix, remainder = self._split_trailing_nary_stop_operator(text)
+                prefix, remainder = self._split_trailing_nary_stop_operator(text) if bracket_depth == 0 else (text, "")
                 if prefix:
                     operand_run = deepcopy(sibling)
                     self._set_run_text(operand_run, prefix)
                     collected.append(operand_run)
+                    bracket_depth = max(0, bracket_depth + self._math_text_bracket_delta(prefix))
 
                     if remainder:
                         self._set_run_text(sibling, remainder)
@@ -721,9 +765,18 @@ class MarkdownToDocxConverter:
                 break
 
             collected.append(sibling)
+            bracket_depth = max(0, bracket_depth + self._math_text_bracket_delta(self._math_node_text(sibling)))
             parent.remove(sibling)
 
         return collected
+
+    def _math_node_text(self, node: etree._Element) -> str:
+        return "".join(node.xpath(".//*[local-name()='t']/text()"))
+
+    def _math_text_bracket_delta(self, text: str) -> int:
+        opens = text.count("(") + text.count("[") + text.count("{")
+        closes = text.count(")") + text.count("]") + text.count("}")
+        return opens - closes
 
     def _starts_with_nary_stop_operator(self, text: str) -> bool:
         return bool(text and text.lstrip().startswith(("+", "-", "−", "±", "∓")))
