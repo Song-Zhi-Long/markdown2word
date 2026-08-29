@@ -1437,6 +1437,9 @@ class MarkdownToDocxConverter:
                 self._append_math(paragraph=para, token=single_block, inline=False)
                 return
 
+            if tag != "center" and self._render_simple_text_paragraph_lines(node, container, config):
+                return
+
             para = container.add_paragraph()
             if tag == "center":
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1662,6 +1665,45 @@ class MarkdownToDocxConverter:
                 paragraph = self._append_text(paragraph, container, tail_text, style)
 
         return paragraph
+
+    def _render_simple_text_paragraph_lines(self, node: etree._Element, container, config: AppConfig) -> bool:
+        if len(node) != 0:
+            return False
+
+        raw_text = node.text or ""
+        normalized_text = self._normalize_inline_text(raw_text)
+        if "\n" not in normalized_text:
+            return False
+
+        rendered_any = False
+        for line in normalized_text.split("\n"):
+            if not line.strip():
+                continue
+            para = container.add_paragraph()
+            self._apply_plain_paragraph_format(para, line, config)
+            style = TextStyle(size_pt=CAPTION_SIZE_PT if self._is_caption_text(line) else BODY_SIZE_PT)
+            self._append_text(para, container, line, style)
+            rendered_any = True
+
+        return rendered_any
+
+    def _apply_plain_paragraph_format(self, paragraph, text: str, config: AppConfig) -> None:
+        if self._is_caption_text(text):
+            try:
+                paragraph.style = "Caption"
+            except KeyError:
+                pass
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            return
+
+        if self._is_abstract_title(text):
+            paragraph.paragraph_format.first_line_indent = Pt(0)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        elif config.body_first_line_indent:
+            paragraph.paragraph_format.first_line_indent = Pt(BODY_FIRST_LINE_INDENT_PT)
+        else:
+            paragraph.paragraph_format.first_line_indent = Pt(0)
 
     def _append_hyperlink_from_node(self, paragraph, container, anchor_node: etree._Element, style: TextStyle, config: AppConfig):
         href = (anchor_node.get("href") or "").strip()
