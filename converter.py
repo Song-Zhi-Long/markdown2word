@@ -501,8 +501,35 @@ class MarkdownToDocxConverter:
             self._repair_matrix_delimiter(math_node)
             self._repair_leading_matrix_delimiter(math_node)
             self._tune_nary_style(math_node)
+            self._convert_omml_widehat_to_accent(math_node)
             self._convert_omml_braces_to_group_chars(math_node)
             self._preserve_omml_text_spaces(math_node)
+
+    def _convert_omml_widehat_to_accent(self, omath: etree._Element) -> None:
+        """Convert latex2mathml's tall ``widehat`` limit into a Word math accent."""
+        for limit_node in list(omath.xpath(".//*[local-name()='limUpp']")):
+            e_node = self._first_child_by_local_name(limit_node, "e")
+            lim_node = self._first_child_by_local_name(limit_node, "lim")
+            if e_node is None or lim_node is None:
+                continue
+            if "".join(lim_node.itertext()).strip() != "^":
+                continue
+
+            accent = OxmlElement("m:acc")
+            accent_pr = OxmlElement("m:accPr")
+            accent_chr = OxmlElement("m:chr")
+            accent_chr.set(qn("m:val"), "\u0302")
+            accent_pr.append(accent_chr)
+            accent.append(accent_pr)
+
+            accent_base = OxmlElement("m:e")
+            for child in list(e_node):
+                accent_base.append(child)
+            accent.append(accent_base)
+
+            parent = limit_node.getparent()
+            if parent is not None:
+                parent.replace(limit_node, accent)
 
     def _convert_omml_braces_to_group_chars(self, omath: etree._Element) -> None:
         brace_specs = {
@@ -1011,7 +1038,14 @@ class MarkdownToDocxConverter:
         return None
 
     def _configure_document_styles(self, document: _DocumentType) -> None:
-        self._configure_style(document, "Normal", LATIN_FONT, CJK_FONT, BODY_SIZE_PT)
+        self._configure_style(
+            document,
+            "Normal",
+            LATIN_FONT,
+            CJK_FONT,
+            BODY_SIZE_PT,
+            alignment=WD_ALIGN_PARAGRAPH.JUSTIFY,
+        )
         self._configure_style(
             document,
             ARTICLE_TITLE_STYLE,
@@ -2104,7 +2138,7 @@ class MarkdownToDocxConverter:
             self._set_paragraph_math_justification(paragraph, "center")
         else:
             if paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
         paragraph.paragraph_format.first_line_indent = Pt(BLOCKQUOTE_FIRST_LINE_INDENT_PT)
         paragraph.paragraph_format.space_before = Pt(BLOCKQUOTE_SPACE_BEFORE_PT)
