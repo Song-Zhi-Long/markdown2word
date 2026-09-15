@@ -25,14 +25,45 @@ class MarkdownToWordApp:
 
         self.output_var = tk.StringVar(value=self.config.output_dir)
         self.asset_var = tk.StringVar(value=self.config.asset_root)
+        self.file_name_var = tk.StringVar()
         self.body_indent_var = tk.BooleanVar(value=self.config.body_first_line_indent)
+        self.body_flush_var = tk.BooleanVar(value=not self.config.body_first_line_indent)
         self.status_var = tk.StringVar(value="就绪")
 
         self._build_ui()
+        self.root.bind_all("<Control-s>", self._run_conversion_shortcut)
+        self.root.bind_all("<Control-S>", self._run_conversion_shortcut)
 
     def _build_ui(self) -> None:
+        action_frame = tk.Frame(self.root)
+        action_frame.pack(fill="x", padx=10, pady=(10, 0))
+
+        filename_frame = tk.Frame(action_frame)
+        filename_frame.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        tk.Label(filename_frame, text="保存文件名:").grid(row=0, column=0, sticky="w")
+        tk.Entry(filename_frame, textvariable=self.file_name_var, width=1).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(8, 0),
+        )
+        filename_frame.columnconfigure(1, weight=1)
+
+        status_frame = tk.Frame(action_frame)
+        status_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        tk.Button(status_frame, text="运行并生成 Word", command=self._run_conversion).grid(row=0, column=0, sticky="w")
+        tk.Label(status_frame, textvariable=self.status_var, anchor="w", width=1).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(12, 0),
+        )
+        status_frame.columnconfigure(1, weight=1)
+        action_frame.columnconfigure(0, weight=1, uniform="top_action")
+        action_frame.columnconfigure(1, weight=1, uniform="top_action")
+
         settings_frame = tk.LabelFrame(self.root, text="默认设置", padx=8, pady=8)
-        settings_frame.pack(fill="x", padx=10, pady=(10, 8))
+        settings_frame.pack(fill="x", padx=10, pady=8)
 
         tk.Label(settings_frame, text="默认输出目录:").grid(row=0, column=0, sticky="w")
         output_entry = tk.Entry(settings_frame, textvariable=self.output_var)
@@ -44,13 +75,21 @@ class MarkdownToWordApp:
         asset_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0))
         tk.Button(settings_frame, text="浏览", command=self._choose_asset_dir, width=8).grid(row=1, column=2, pady=(8, 0))
 
+        tk.Label(settings_frame, text="正文格式:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        body_format_frame = tk.Frame(settings_frame)
+        body_format_frame.grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0))
         tk.Checkbutton(
-            settings_frame,
-            text="正文首行缩进",
+            body_format_frame,
+            text="缩进",
             variable=self.body_indent_var,
-            onvalue=True,
-            offvalue=False,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            command=self._select_body_indent,
+        ).pack(side="left")
+        tk.Checkbutton(
+            body_format_frame,
+            text="顶格",
+            variable=self.body_flush_var,
+            command=self._select_body_flush,
+        ).pack(side="left", padx=(12, 0))
 
         settings_frame.columnconfigure(1, weight=1)
 
@@ -59,13 +98,6 @@ class MarkdownToWordApp:
 
         self.text_box = ScrolledText(editor_frame, wrap="word", font=("Consolas", 11))
         self.text_box.pack(fill="both", expand=True)
-
-        action_frame = tk.Frame(self.root)
-        action_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        tk.Button(action_frame, text="运行", width=8, command=self._run_conversion).grid(row=0, column=0, sticky="w")
-        tk.Label(action_frame, textvariable=self.status_var, anchor="w").grid(row=0, column=1, sticky="ew", padx=(12, 0))
-        action_frame.columnconfigure(1, weight=1)
 
     def _choose_output_dir(self) -> None:
         path = filedialog.askdirectory(initialdir=self.output_var.get() or str(Path.cwd()))
@@ -76,6 +108,22 @@ class MarkdownToWordApp:
         path = filedialog.askdirectory(initialdir=self.asset_var.get() or str(Path.cwd()))
         if path:
             self.asset_var.set(path)
+
+    def _select_body_indent(self) -> None:
+        if self.body_indent_var.get():
+            self.body_flush_var.set(False)
+        else:
+            self.body_indent_var.set(True)
+
+    def _select_body_flush(self) -> None:
+        if self.body_flush_var.get():
+            self.body_indent_var.set(False)
+        else:
+            self.body_flush_var.set(True)
+
+    def _run_conversion_shortcut(self, _event: tk.Event) -> str:
+        self._run_conversion()
+        return "break"
 
     def _run_conversion(self) -> None:
         markdown_text = self.text_box.get("1.0", "end-1c")
@@ -88,7 +136,6 @@ class MarkdownToWordApp:
             output_dir=self.output_var.get().strip() or str(default_output),
             asset_root=self.asset_var.get().strip() or str(Path.cwd()),
             title_chars=self.config.title_chars,
-            auto_timestamp=True,
             body_first_line_indent=self.body_indent_var.get(),
         )
 
@@ -96,7 +143,7 @@ class MarkdownToWordApp:
         self.root.update_idletasks()
 
         try:
-            output_path = self.converter.convert(markdown_text, config)
+            output_path = self.converter.convert(markdown_text, config, self.file_name_var.get())
             self._save_settings(config)
 
             warning_count = len(self.converter.last_warnings)
@@ -123,7 +170,6 @@ class MarkdownToWordApp:
             output_dir=str(default_output),
             asset_root=str(default_asset),
             title_chars=12,
-            auto_timestamp=True,
             body_first_line_indent=True,
         )
 
@@ -145,7 +191,6 @@ class MarkdownToWordApp:
                 output_dir=output_dir,
                 asset_root=asset_root,
                 title_chars=int(payload.get("title_chars", default.title_chars)),
-                auto_timestamp=bool(payload.get("auto_timestamp", True)),
                 body_first_line_indent=bool(payload.get("body_first_line_indent", default.body_first_line_indent)),
             )
         except Exception:

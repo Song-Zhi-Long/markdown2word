@@ -7,7 +7,6 @@ import urllib.parse
 import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -116,7 +115,6 @@ class AppConfig:
     output_dir: str
     asset_root: str
     title_chars: int = 12
-    auto_timestamp: bool = True
     body_first_line_indent: bool = True
 
 
@@ -150,7 +148,7 @@ class MarkdownToDocxConverter:
         self.last_warnings: List[str] = []
         self._document: Optional[_DocumentType] = None
 
-    def convert(self, markdown_text: str, config: AppConfig) -> str:
+    def convert(self, markdown_text: str, config: AppConfig, output_filename: str = "") -> str:
         if not markdown_text or not markdown_text.strip():
             raise ValueError("Markdown text is empty.")
 
@@ -179,7 +177,8 @@ class MarkdownToDocxConverter:
         for child in root:
             self._render_block(child, document, config)
 
-        output_path = output_dir / self._build_output_filename(markdown_text, config)
+        output_filename = self._build_output_filename(markdown_text, config, output_filename)
+        output_path = self._build_available_output_path(output_dir, output_filename)
         document.save(str(output_path))
         return str(output_path)
 
@@ -2407,7 +2406,11 @@ class MarkdownToDocxConverter:
         }
         return mapping.get(align_attr)
 
-    def _build_output_filename(self, markdown_text: str, config: AppConfig) -> str:
+    def _build_output_filename(self, markdown_text: str, config: AppConfig, requested_name: str = "") -> str:
+        requested_base = self._normalize_requested_output_name(requested_name)
+        if requested_base:
+            return f"{requested_base}.docx"
+
         cleaned = re.sub(r"```[\s\S]*?```|~~~[\s\S]*?~~~", " ", markdown_text)
         cleaned = re.sub(r"\$\$.+?\$\$", " ", cleaned, flags=re.DOTALL)
         cleaned = re.sub(r"\\\[.+?\\\]", " ", cleaned, flags=re.DOTALL)
@@ -2419,10 +2422,30 @@ class MarkdownToDocxConverter:
 
         normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", cleaned, flags=re.UNICODE)
         base = normalized[: max(1, config.title_chars)] or "document"
-
-        if config.auto_timestamp:
-            return f"{base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
         return f"{base}.docx"
+
+    def _normalize_requested_output_name(self, requested_name: str) -> str:
+        name = requested_name.strip()
+        if not name:
+            return ""
+
+        name = re.split(r"[/\\\\]+", name)[-1]
+        if name.lower().endswith(".docx"):
+            name = name[:-5]
+        name = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", name).rstrip(". ")
+        return name
+
+    def _build_available_output_path(self, output_dir: Path, filename: str) -> Path:
+        output_path = output_dir / filename
+        stem = output_path.stem
+        suffix = output_path.suffix
+        index = 1
+
+        while output_path.exists():
+            output_path = output_dir / f"{stem}({index}){suffix}"
+            index += 1
+
+        return output_path
 
     def _single_block_math_token(self, node: etree._Element) -> Optional[str]:
         if len(node) != 0:
