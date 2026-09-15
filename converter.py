@@ -1091,6 +1091,7 @@ class MarkdownToDocxConverter:
             alignment=WD_ALIGN_PARAGRAPH.CENTER,
             first_line_indent_pt=0,
             outline_level=9,
+            bold=False,
         )
         self._configure_hyperlink_style(document, "Hyperlink", RGBColor(5, 99, 193))
         self._configure_hyperlink_style(document, "FollowedHyperlink", RGBColor(149, 79, 114))
