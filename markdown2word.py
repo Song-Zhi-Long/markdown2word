@@ -28,6 +28,7 @@ class MarkdownToWordApp:
         self.file_name_var = tk.StringVar()
         self.body_indent_var = tk.BooleanVar(value=self.config.body_first_line_indent)
         self.body_flush_var = tk.BooleanVar(value=not self.config.body_first_line_indent)
+        self.markdown_wrap_var = tk.BooleanVar(value=self.config.markdown_word_wrap)
         self.status_var = tk.StringVar(value="就绪")
 
         self._build_ui()
@@ -36,7 +37,7 @@ class MarkdownToWordApp:
 
     def _build_ui(self) -> None:
         action_frame = tk.Frame(self.root)
-        action_frame.pack(fill="x", padx=10, pady=(10, 0))
+        action_frame.pack(fill="x", padx=8, pady=(6, 0))
 
         filename_frame = tk.Frame(action_frame)
         filename_frame.grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -51,7 +52,14 @@ class MarkdownToWordApp:
 
         status_frame = tk.Frame(action_frame)
         status_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        tk.Button(status_frame, text="运行并生成 Word", command=self._run_conversion).grid(row=0, column=0, sticky="w")
+        tk.Button(
+            status_frame,
+            text="运行并生成 Word",
+            command=self._run_conversion,
+            height=1,
+            padx=6,
+            pady=1,
+        ).grid(row=0, column=0, sticky="w")
         tk.Label(status_frame, textvariable=self.status_var, anchor="w", width=1).grid(
             row=0,
             column=1,
@@ -62,22 +70,38 @@ class MarkdownToWordApp:
         action_frame.columnconfigure(0, weight=1, uniform="top_action")
         action_frame.columnconfigure(1, weight=1, uniform="top_action")
 
-        settings_frame = tk.LabelFrame(self.root, text="默认设置", padx=8, pady=8)
-        settings_frame.pack(fill="x", padx=10, pady=8)
+        settings_frame = tk.LabelFrame(self.root, text="默认设置", padx=6, pady=4)
+        settings_frame.pack(fill="x", padx=8, pady=(4, 4))
 
         tk.Label(settings_frame, text="默认输出目录:").grid(row=0, column=0, sticky="w")
         output_entry = tk.Entry(settings_frame, textvariable=self.output_var)
         output_entry.grid(row=0, column=1, sticky="ew", padx=(8, 8))
-        tk.Button(settings_frame, text="浏览", command=self._choose_output_dir, width=8).grid(row=0, column=2)
+        tk.Button(
+            settings_frame,
+            text="浏览",
+            command=self._choose_output_dir,
+            width=6,
+            height=1,
+            padx=4,
+            pady=1,
+        ).grid(row=0, column=2)
 
-        tk.Label(settings_frame, text="资源根目录:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        tk.Label(settings_frame, text="资源根目录:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         asset_entry = tk.Entry(settings_frame, textvariable=self.asset_var)
-        asset_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0))
-        tk.Button(settings_frame, text="浏览", command=self._choose_asset_dir, width=8).grid(row=1, column=2, pady=(8, 0))
+        asset_entry.grid(row=1, column=1, sticky="ew", padx=(8, 8), pady=(4, 0))
+        tk.Button(
+            settings_frame,
+            text="浏览",
+            command=self._choose_asset_dir,
+            width=6,
+            height=1,
+            padx=4,
+            pady=1,
+        ).grid(row=1, column=2, pady=(4, 0))
 
-        tk.Label(settings_frame, text="正文格式:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        tk.Label(settings_frame, text="正文格式:").grid(row=2, column=0, sticky="w", pady=(4, 0))
         body_format_frame = tk.Frame(settings_frame)
-        body_format_frame.grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        body_format_frame.grid(row=2, column=1, columnspan=2, sticky="w", padx=(8, 0), pady=(4, 0))
         tk.Checkbutton(
             body_format_frame,
             text="缩进",
@@ -90,14 +114,31 @@ class MarkdownToWordApp:
             variable=self.body_flush_var,
             command=self._select_body_flush,
         ).pack(side="left", padx=(12, 0))
+        tk.Checkbutton(
+            body_format_frame,
+            text="自动换行",
+            variable=self.markdown_wrap_var,
+            command=self._sync_markdown_wrap,
+        ).pack(side="left", padx=(24, 0))
 
         settings_frame.columnconfigure(1, weight=1)
 
-        editor_frame = tk.LabelFrame(self.root, text="Markdown 输入", padx=8, pady=8)
-        editor_frame.pack(fill="both", expand=True, padx=10, pady=8)
+        editor_frame = tk.LabelFrame(self.root, text="Markdown 输入", padx=4, pady=4)
+        editor_frame.pack(fill="both", expand=True, padx=8, pady=(4, 6))
+        editor_frame.rowconfigure(0, weight=1)
+        editor_frame.columnconfigure(0, weight=1)
 
-        self.text_box = ScrolledText(editor_frame, wrap="word", font=("Consolas", 11))
-        self.text_box.pack(fill="both", expand=True)
+        self.horizontal_scrollbar = tk.Scrollbar(editor_frame, orient="horizontal")
+        self.text_box = ScrolledText(
+            editor_frame,
+            wrap=self._current_markdown_wrap(),
+            font=("Consolas", 11),
+            xscrollcommand=self.horizontal_scrollbar.set,
+        )
+        self.horizontal_scrollbar.config(command=self.text_box.xview)
+        self.text_box.grid(row=0, column=0, sticky="nsew")
+        self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        self._sync_markdown_wrap()
 
     def _choose_output_dir(self) -> None:
         path = filedialog.askdirectory(initialdir=self.output_var.get() or str(Path.cwd()))
@@ -121,6 +162,19 @@ class MarkdownToWordApp:
         else:
             self.body_flush_var.set(True)
 
+    def _current_markdown_wrap(self) -> str:
+        return "word" if self.markdown_wrap_var.get() else "none"
+
+    def _sync_markdown_wrap(self) -> None:
+        if not hasattr(self, "text_box"):
+            return
+
+        self.text_box.configure(wrap=self._current_markdown_wrap())
+        if self.markdown_wrap_var.get():
+            self.horizontal_scrollbar.grid_remove()
+        else:
+            self.horizontal_scrollbar.grid()
+
     def _run_conversion_shortcut(self, _event: tk.Event) -> str:
         self._run_conversion()
         return "break"
@@ -137,6 +191,7 @@ class MarkdownToWordApp:
             asset_root=self.asset_var.get().strip() or str(Path.cwd()),
             title_chars=self.config.title_chars,
             body_first_line_indent=self.body_indent_var.get(),
+            markdown_word_wrap=self.markdown_wrap_var.get(),
         )
 
         self.status_var.set("正在转换，请稍候...")
@@ -171,6 +226,7 @@ class MarkdownToWordApp:
             asset_root=str(default_asset),
             title_chars=12,
             body_first_line_indent=True,
+            markdown_word_wrap=True,
         )
 
         if not self.settings_path.exists():
@@ -192,6 +248,7 @@ class MarkdownToWordApp:
                 asset_root=asset_root,
                 title_chars=int(payload.get("title_chars", default.title_chars)),
                 body_first_line_indent=bool(payload.get("body_first_line_indent", default.body_first_line_indent)),
+                markdown_word_wrap=bool(payload.get("markdown_word_wrap", default.markdown_word_wrap)),
             )
         except Exception:
             return default

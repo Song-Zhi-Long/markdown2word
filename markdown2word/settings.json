@@ -2,5 +2,6 @@
   "output_dir": "C:\\Users\\90819\\Downloads",
   "asset_root": "C:\\My_Study\\研究生学习记录\\markdown2word\\data",
   "title_chars": 12,
-  "body_first_line_indent": true
+  "body_first_line_indent": true,
+  "markdown_word_wrap": true
 }

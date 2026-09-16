@@ -116,6 +116,7 @@ class AppConfig:
     asset_root: str
     title_chars: int = 12
     body_first_line_indent: bool = True
+    markdown_word_wrap: bool = True
 
 
 @dataclass
