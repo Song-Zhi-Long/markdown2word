@@ -498,8 +498,12 @@ class MarkdownToDocxConverter:
                 self._convert_inline_nary_to_scripts(math_node)
             else:
                 self._convert_display_nary_runs(math_node)
-            self._repair_matrix_delimiter(math_node)
-            self._repair_leading_matrix_delimiter(math_node)
+            # Matrices can also live inside boxes, fractions, or other bases.
+            # Repair inner containers first so outer repairs copy finished math.
+            matrix_containers = math_node.xpath(".//*[local-name()='m' or local-name()='eqArr']/..")
+            for container in reversed(matrix_containers):
+                self._repair_matrix_delimiter(container)
+                self._repair_leading_matrix_delimiter(container)
             self._tune_nary_style(math_node)
             self._convert_omml_widehat_to_accent(math_node)
             self._convert_omml_braces_to_group_chars(math_node)
@@ -897,6 +901,28 @@ class MarkdownToDocxConverter:
             self._set_matrix_column_alignments(matrix, alignments)
 
     def _apply_cases_matrix_layout(self, omml_root: etree._Element) -> None:
+        # The XSLT emits a one-column cases table as an equation array, whose
+        # rows Word centers. Use a matrix so even cases without '&' align left.
+        for array in list(omml_root.xpath(".//*[local-name()='eqArr']")):
+            base = array.getparent()
+            delimiter = base.getparent() if base is not None else None
+            if self._tag_name(delimiter) != "d":
+                continue
+            opening = delimiter.xpath("./*[local-name()='dPr']/*[local-name()='begChr']")
+            closing = delimiter.xpath("./*[local-name()='dPr']/*[local-name()='endChr']")
+            if not opening or not closing:
+                continue
+            if opening[0].get(qn("m:val")) != "{" or closing[0].get(qn("m:val")) != "":
+                continue
+            matrix = OxmlElement("m:m")
+            for cell in list(array):
+                if self._tag_name(cell) != "e":
+                    continue
+                row = OxmlElement("m:mr")
+                row.append(cell)
+                matrix.append(row)
+            base.replace(array, matrix)
+
         for matrix in omml_root.xpath(".//*[local-name()='m']"):
             column_count = self._matrix_column_count(matrix)
             if column_count <= 0:
@@ -1416,6 +1442,10 @@ class MarkdownToDocxConverter:
         # Doubled delimiters may wrap ordinary LaTeX or an escaped copy of it.
         # Native environments must keep their two-backslash row separators.
         if re.search(r"(?<!\\)\\begin\{", latex):
+            # A copied row break with spacing may be escaped even though the
+            # surrounding environment commands are ordinary LaTeX. Decode it
+            # before stripping the unsupported spacing option during conversion.
+            latex = re.sub(r"(?<!\\)\\{4}(?=\s*\[)", lambda _: r"\\", latex)
             return re.sub(r"(?<!\\)\\\\(?=[{}])", lambda _: "\\", latex)
 
         def unescape(match: re.Match[str]) -> str:
