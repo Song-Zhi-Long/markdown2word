@@ -1373,11 +1373,13 @@ class MarkdownToDocxConverter:
     def _extract_math_tokens(self, text: str) -> str:
         self._math_tokens = {}
 
-        def create_token(latex: str, display: bool) -> str:
+        def create_token(latex: str, display: bool, escaped: bool = False) -> str:
             token_type = BLOCK_MATH_TOKEN if display else INLINE_MATH_TOKEN
             token = f"{token_type}TOK{len(self._math_tokens)}END"
             if display:
                 latex = self._strip_blockquote_markers(latex)
+            if escaped:
+                latex = self._unescape_math_body(latex)
             self._math_tokens[token] = {"latex": latex.strip(), "display": display}
             if display:
                 return f"\n\n{token}\n\n"
@@ -1386,20 +1388,44 @@ class MarkdownToDocxConverter:
         def blockquote_display_replacer(match: re.Match[str]) -> str:
             prefix = match.group("prefix")
             body = self._strip_blockquote_markers(match.group("body"))
-            token = create_token(body, True).strip()
+            token = create_token(body, True, escaped=len(match.group("slashes")) == 2).strip()
             return f"{prefix}\n{prefix}{token}\n{prefix}"
 
         blockquote_display_pattern = re.compile(
-            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)\\\[[ \t]*\n"
-            r"(?P<body>.*?)[ \t]*>[ \t]*\\\][ \t]*$"
+            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)(?P<slashes>\\{1,2})\[[ \t]*\n"
+            r"(?P<body>.*?)[ \t]*>[ \t]*(?P=slashes)\][ \t]*$"
         )
         text = blockquote_display_pattern.sub(blockquote_display_replacer, text)
 
         text = re.sub(r"\$\$(.+?)\$\$", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
-        text = re.sub(r"\\\[(.+?)\\\]", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
-        text = re.sub(r"\\\((.+?)\\\)", lambda m: create_token(m.group(1), False), text)
+        for opening, closing, display in (("[", "]", True), ("(", ")", False)):
+            pattern = (
+                r"(?<!\\)(?P<slashes>\\{1,2})" + re.escape(opening)
+                + r"(?P<body>.+?)(?<!\\)(?P=slashes)" + re.escape(closing)
+            )
+            text = re.sub(
+                pattern,
+                lambda m: create_token(m.group("body"), display, escaped=len(m.group("slashes")) == 2),
+                text,
+                flags=re.DOTALL if display else 0,
+            )
         text = re.sub(r"(?<!\\)\$(?!\$)([^\n]+?)(?<!\\)\$", lambda m: create_token(m.group(1), False), text)
         return text
+
+    def _unescape_math_body(self, latex: str) -> str:
+        # Doubled delimiters may wrap ordinary LaTeX or an escaped copy of it.
+        # Native environments must keep their two-backslash row separators.
+        if re.search(r"(?<!\\)\\begin\{", latex):
+            return re.sub(r"(?<!\\)\\\\(?=[{}])", lambda _: "\\", latex)
+
+        def unescape(match: re.Match[str]) -> str:
+            slashes = match.group(0)
+            following = latex[match.end() : match.end() + 1]
+            if len(slashes) >= 4 or following.isalpha() or following in ("{", "}"):
+                return "\\" * ((len(slashes) + 1) // 2)
+            return slashes
+
+        return re.sub(r"\\{2,}", unescape, latex)
 
     def _strip_blockquote_markers(self, text: str) -> str:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
