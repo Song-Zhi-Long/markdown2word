@@ -505,24 +505,26 @@ class MarkdownToDocxConverter:
                 self._repair_matrix_delimiter(container)
                 self._repair_leading_matrix_delimiter(container)
             self._tune_nary_style(math_node)
-            self._convert_omml_widehat_to_accent(math_node)
+            self._convert_omml_math_accents(math_node)
             self._convert_omml_braces_to_group_chars(math_node)
             self._preserve_omml_text_spaces(math_node)
 
-    def _convert_omml_widehat_to_accent(self, omath: etree._Element) -> None:
-        """Convert latex2mathml's tall ``widehat`` limit into a Word math accent."""
+    def _convert_omml_math_accents(self, omath: etree._Element) -> None:
+        """Render hats and tildes as accents rather than raised upper limits."""
+        accents = {"^": "\u0302", "~": "\u0303"}
         for limit_node in list(omath.xpath(".//*[local-name()='limUpp']")):
             e_node = self._first_child_by_local_name(limit_node, "e")
             lim_node = self._first_child_by_local_name(limit_node, "lim")
             if e_node is None or lim_node is None:
                 continue
-            if "".join(lim_node.itertext()).strip() != "^":
+            symbol = accents.get("".join(lim_node.itertext()).strip())
+            if symbol is None:
                 continue
 
             accent = OxmlElement("m:acc")
             accent_pr = OxmlElement("m:accPr")
             accent_chr = OxmlElement("m:chr")
-            accent_chr.set(qn("m:val"), "\u0302")
+            accent_chr.set(qn("m:val"), symbol)
             accent_pr.append(accent_chr)
             accent.append(accent_pr)
 
@@ -1414,11 +1416,11 @@ class MarkdownToDocxConverter:
         def blockquote_display_replacer(match: re.Match[str]) -> str:
             prefix = match.group("prefix")
             body = self._strip_blockquote_markers(match.group("body"))
-            token = create_token(body, True, escaped=len(match.group("slashes")) == 2).strip()
+            token = create_token(body, True, escaped=len(match.group("slashes")) > 1).strip()
             return f"{prefix}\n{prefix}{token}\n{prefix}"
 
         blockquote_display_pattern = re.compile(
-            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)(?P<slashes>\\{1,2})\[[ \t]*\n"
+            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)(?P<slashes>\\{1,2}|\\{4})\[[ \t]*\n"
             r"(?P<body>.*?)[ \t]*>[ \t]*(?P=slashes)\][ \t]*$"
         )
         text = blockquote_display_pattern.sub(blockquote_display_replacer, text)
@@ -1426,12 +1428,16 @@ class MarkdownToDocxConverter:
         text = re.sub(r"\$\$(.+?)\$\$", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
         for opening, closing, display in (("[", "]", True), ("(", ")", False)):
             pattern = (
-                r"(?<!\\)(?P<slashes>\\{1,2})" + re.escape(opening)
+                r"(?<!\\)(?P<slashes>\\{1,2}|\\{4})" + re.escape(opening)
                 + r"(?P<body>.+?)(?<!\\)(?P=slashes)" + re.escape(closing)
             )
+            if display:
+                # A copied Markdown hard break after a display delimiter is
+                # layout syntax, not a paragraph containing a literal slash.
+                pattern += r"(?:[ \t]*\\[ \t]*(?=\r?\n|$))?"
             text = re.sub(
                 pattern,
-                lambda m: create_token(m.group("body"), display, escaped=len(m.group("slashes")) == 2),
+                lambda m: create_token(m.group("body"), display, escaped=len(m.group("slashes")) > 1),
                 text,
                 flags=re.DOTALL if display else 0,
             )
@@ -1439,19 +1445,30 @@ class MarkdownToDocxConverter:
         return text
 
     def _unescape_math_body(self, latex: str) -> str:
-        # Doubled delimiters may wrap ordinary LaTeX or an escaped copy of it.
+        # Markdown copied through multiple escaping layers may turn math syntax
+        # into '\\\_' or '\\\*'. A normal '\_' remains a literal underscore.
+        latex = re.sub(r"(?<!\\)(?:\\{7}|\\{3})(?=[_^*])", "", latex)
+
+        # Escaped delimiters may wrap ordinary LaTeX or an escaped copy of it.
         # Native environments must keep their two-backslash row separators.
         if re.search(r"(?<!\\)\\begin\{", latex):
             # A copied row break with spacing may be escaped even though the
             # surrounding environment commands are ordinary LaTeX. Decode it
             # before stripping the unsupported spacing option during conversion.
             latex = re.sub(r"(?<!\\)\\{4}(?=\s*\[)", lambda _: r"\\", latex)
-            return re.sub(r"(?<!\\)\\\\(?=[{}])", lambda _: "\\", latex)
+            return re.sub(r"(?<!\\)\\{2,}(?=[{}])", lambda _: "\\", latex)
+
+        escaped_environment = re.search(r"(?<!\\)(\\{2}|\\{4})begin\{", latex)
+        if escaped_environment:
+            width = len(escaped_environment.group(1))
+            return re.sub(r"\\{2,}", lambda m: "\\" * max(1, (len(m.group(0)) + width - 1) // width), latex)
 
         def unescape(match: re.Match[str]) -> str:
             slashes = match.group(0)
             following = latex[match.end() : match.end() + 1]
-            if len(slashes) >= 4 or following.isalpha() or following in ("{", "}"):
+            if following.isalpha() or following in ("{", "}"):
+                return "\\"
+            if len(slashes) >= 4:
                 return "\\" * ((len(slashes) + 1) // 2)
             return slashes
 
