@@ -505,24 +505,26 @@ class MarkdownToDocxConverter:
                 self._repair_matrix_delimiter(container)
                 self._repair_leading_matrix_delimiter(container)
             self._tune_nary_style(math_node)
-            self._convert_omml_widehat_to_accent(math_node)
+            self._convert_omml_accents(math_node)
             self._convert_omml_braces_to_group_chars(math_node)
             self._preserve_omml_text_spaces(math_node)
 
-    def _convert_omml_widehat_to_accent(self, omath: etree._Element) -> None:
-        """Convert latex2mathml's tall ``widehat`` limit into a Word math accent."""
+    def _convert_omml_accents(self, omath: etree._Element) -> None:
+        """Convert hat and tilde limits into native Word math accents."""
+        accent_characters = {"^": "\u0302", "~": "\u0303"}
         for limit_node in list(omath.xpath(".//*[local-name()='limUpp']")):
             e_node = self._first_child_by_local_name(limit_node, "e")
             lim_node = self._first_child_by_local_name(limit_node, "lim")
             if e_node is None or lim_node is None:
                 continue
-            if "".join(lim_node.itertext()).strip() != "^":
+            accent_character = accent_characters.get("".join(lim_node.itertext()).strip())
+            if accent_character is None:
                 continue
 
             accent = OxmlElement("m:acc")
             accent_pr = OxmlElement("m:accPr")
             accent_chr = OxmlElement("m:chr")
-            accent_chr.set(qn("m:val"), "\u0302")
+            accent_chr.set(qn("m:val"), accent_character)
             accent_pr.append(accent_chr)
             accent.append(accent_pr)
 
@@ -1217,12 +1219,26 @@ class MarkdownToDocxConverter:
 
     def _prepare_markdown(self, text: str) -> str:
         masked_text, code_tokens = self._mask_code_regions(text)
-        indent_ready_text = self._normalize_two_space_list_indents(masked_text)
+        copy_ready_text = self._normalize_escaped_markdown_copy(masked_text)
+        indent_ready_text = self._normalize_two_space_list_indents(copy_ready_text)
         boundary_ready_text = self._normalize_markdown_block_boundaries(indent_ready_text)
         list_ready_text = self._split_reset_ordered_lists(boundary_ready_text)
         caption_ready_text = self._merge_caption_headings(list_ready_text)
         math_ready_text = self._extract_math_tokens(caption_ready_text)
         return self._restore_tokens(math_ready_text, code_tokens)
+
+    def _normalize_escaped_markdown_copy(self, text: str) -> str:
+        # Recognize an escaped document copy, rather than unescaping arbitrary
+        # Markdown that intentionally uses literal headings or backslashes.
+        if not re.search(r"(?m)^[ \t]{0,3}\\#{1,6}\s", text):
+            return text
+        if len(re.findall(r"(?m)(?<!\\)\\[ \t]*$", text)) < 2:
+            return text
+        if not re.search(r"(?<!\\)\\{2,}[\[(]", text):
+            return text
+        text = re.sub(r"(?m)(?<!\\)\\[ \t]*$", "", text)
+        text = re.sub(r"(?m)^([ \t]{0,3})\\(?=#{1,6}\s)", r"\1", text)
+        return text.replace(r"\*\*", "**")
 
     def _normalize_two_space_list_indents(self, text: str) -> str:
         normalized_lines: List[str] = []
@@ -1399,13 +1415,13 @@ class MarkdownToDocxConverter:
     def _extract_math_tokens(self, text: str) -> str:
         self._math_tokens = {}
 
-        def create_token(latex: str, display: bool, escaped: bool = False) -> str:
+        def create_token(latex: str, display: bool, delimiter_slashes: int = 1) -> str:
             token_type = BLOCK_MATH_TOKEN if display else INLINE_MATH_TOKEN
             token = f"{token_type}TOK{len(self._math_tokens)}END"
             if display:
                 latex = self._strip_blockquote_markers(latex)
-            if escaped:
-                latex = self._unescape_math_body(latex)
+            if delimiter_slashes > 1:
+                latex = self._unescape_math_body(latex, delimiter_slashes)
             self._math_tokens[token] = {"latex": latex.strip(), "display": display}
             if display:
                 return f"\n\n{token}\n\n"
@@ -1414,11 +1430,11 @@ class MarkdownToDocxConverter:
         def blockquote_display_replacer(match: re.Match[str]) -> str:
             prefix = match.group("prefix")
             body = self._strip_blockquote_markers(match.group("body"))
-            token = create_token(body, True, escaped=len(match.group("slashes")) == 2).strip()
+            token = create_token(body, True, delimiter_slashes=len(match.group("slashes"))).strip()
             return f"{prefix}\n{prefix}{token}\n{prefix}"
 
         blockquote_display_pattern = re.compile(
-            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)(?P<slashes>\\{1,2})\[[ \t]*\n"
+            r"(?ms)^(?P<prefix>[ \t]*>[ \t]*)(?P<slashes>\\{1,2}|\\{4}|\\{8})\[[ \t]*\n"
             r"(?P<body>.*?)[ \t]*>[ \t]*(?P=slashes)\][ \t]*$"
         )
         text = blockquote_display_pattern.sub(blockquote_display_replacer, text)
@@ -1426,36 +1442,87 @@ class MarkdownToDocxConverter:
         text = re.sub(r"\$\$(.+?)\$\$", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
         for opening, closing, display in (("[", "]", True), ("(", ")", False)):
             pattern = (
-                r"(?<!\\)(?P<slashes>\\{1,2})" + re.escape(opening)
+                r"(?<!\\)(?P<slashes>\\{1,2}|\\{4}|\\{8})" + re.escape(opening)
                 + r"(?P<body>.+?)(?<!\\)(?P=slashes)" + re.escape(closing)
             )
             text = re.sub(
                 pattern,
-                lambda m: create_token(m.group("body"), display, escaped=len(m.group("slashes")) == 2),
+                lambda m: create_token(m.group("body"), display, delimiter_slashes=len(m.group("slashes"))),
                 text,
                 flags=re.DOTALL if display else 0,
             )
         text = re.sub(r"(?<!\\)\$(?!\$)([^\n]+?)(?<!\\)\$", lambda m: create_token(m.group(1), False), text)
         return text
 
-    def _unescape_math_body(self, latex: str) -> str:
-        # Doubled delimiters may wrap ordinary LaTeX or an escaped copy of it.
+    def _unescape_math_body(self, latex: str, delimiter_slashes: int = 2) -> str:
+        # Escaped delimiters may wrap native, fully escaped, or mixed LaTeX.
         # Native environments must keep their two-backslash row separators.
+        environment = re.search(r"(?<!\\)(\\{2,})begin\{", latex)
+        command_widths = {len(run) for run in re.findall(r"(?<!\\)(\\+)[A-Za-z]+", latex)}
         if re.search(r"(?<!\\)\\begin\{", latex):
             # A copied row break with spacing may be escaped even though the
             # surrounding environment commands are ordinary LaTeX. Decode it
             # before stripping the unsupported spacing option during conversion.
-            latex = re.sub(r"(?<!\\)\\{4}(?=\s*\[)", lambda _: r"\\", latex)
-            return re.sub(r"(?<!\\)\\\\(?=[{}])", lambda _: "\\", latex)
+            latex = re.sub(r"(?<!\\)(?:\\{4}|\\{8})(?=\s*\[)", lambda _: r"\\", latex)
+            latex = re.sub(r"(?<!\\)\\{2,}(?=[{}])", lambda _: "\\", latex)
+        elif environment is not None or (len(command_widths) == 1 and min(command_widths) > 1):
+            # Infer the body encoding from its environment commands. A copied
+            # row separator contains twice as many slashes as a command.
+            command_slashes = len(environment.group(1)) if environment is not None else next(iter(command_widths))
+            latex = re.sub(
+                r"\\{2,}",
+                lambda m: "\\" * ((len(m.group(0)) + command_slashes - 1) // command_slashes),
+                latex,
+            )
+        else:
+            def unescape(match: re.Match[str]) -> str:
+                slashes = match.group(0)
+                following = latex[match.end() : match.end() + 1]
+                if following.isalpha() or following in ("{", "}"):
+                    return "\\"
+                if len(slashes) >= 4:
+                    return "\\" * max(2, (len(slashes) + delimiter_slashes - 1) // delimiter_slashes)
+                return slashes
 
-        def unescape(match: re.Match[str]) -> str:
-            slashes = match.group(0)
-            following = latex[match.end() : match.end() + 1]
-            if len(slashes) >= 4 or following.isalpha() or following in ("{", "}"):
-                return "\\" * ((len(slashes) + 1) // 2)
-            return slashes
+            latex = re.sub(r"\\{2,}", unescape, latex)
+        return self._unescape_math_markdown_symbols(latex)
 
-        return re.sub(r"\\{2,}", unescape, latex)
+    def _unescape_math_markdown_symbols(self, latex: str) -> str:
+        def restore_symbols(segment: str) -> str:
+            def replace(match: re.Match[str]) -> str:
+                marker = match.group("marker")
+                following = segment[match.end() : match.end() + 1]
+                if marker == "*" or len(match.group("slashes")) > 1 or following == "{":
+                    return marker
+                return match.group(0)
+
+            return re.sub(r"(?P<slashes>\\+)(?P<marker>[_*])", replace, segment)
+
+        # Literal underscores and stars inside text commands retain their
+        # LaTeX meaning, including when text arguments contain nested braces.
+        text_command = re.compile(r"(?<!\\)\\(?:text(?:rm|bf|it|sf|tt|normal)?|mbox|operatorname)\*?\s*\{")
+        pieces: List[str] = []
+        position = 0
+        for match in text_command.finditer(latex):
+            if match.start() < position:
+                continue
+            depth = 1
+            end = match.end()
+            while end < len(latex) and depth:
+                char = latex[end]
+                if char == "\\":
+                    end += 2
+                    continue
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                end += 1
+            pieces.append(restore_symbols(latex[position : match.start()]))
+            pieces.append(latex[match.start() : end])
+            position = end
+        pieces.append(restore_symbols(latex[position:]))
+        return "".join(pieces)
 
     def _strip_blockquote_markers(self, text: str) -> str:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
