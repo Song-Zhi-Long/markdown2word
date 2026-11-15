@@ -30,10 +30,19 @@ class MarkdownToWordApp:
         self.body_flush_var = tk.BooleanVar(value=not self.config.body_first_line_indent)
         self.markdown_wrap_var = tk.BooleanVar(value=self.config.markdown_word_wrap)
         self.status_var = tk.StringVar(value="就绪")
+        self.find_var = tk.StringVar()
+        self.find_status_var = tk.StringVar(value="0 / 0")
+        self._find_visible = False
+        self._find_matches: list[tuple[str, str]] = []
+        self._find_index = -1
+        self._find_refresh_job: str | None = None
 
         self._build_ui()
         self.root.bind_all("<Control-s>", self._run_conversion_shortcut)
         self.root.bind_all("<Control-S>", self._run_conversion_shortcut)
+        for key in ("<Control-f>", "<Control-F>"):
+            self.root.bind(key, self._show_find_bar)
+        self.root.bind("<Escape>", self._hide_find_bar)
 
     def _build_ui(self) -> None:
         action_frame = tk.Frame(self.root)
@@ -125,8 +134,22 @@ class MarkdownToWordApp:
 
         editor_frame = tk.LabelFrame(self.root, text="Markdown 输入", padx=4, pady=4)
         editor_frame.pack(fill="both", expand=True, padx=8, pady=(4, 6))
-        editor_frame.rowconfigure(0, weight=1)
+        editor_frame.rowconfigure(1, weight=1)
         editor_frame.columnconfigure(0, weight=1)
+
+        self.find_bar = tk.Frame(editor_frame)
+        self.find_bar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.find_bar.columnconfigure(1, weight=1)
+        tk.Label(self.find_bar, text="查找:").grid(row=0, column=0)
+        self.find_entry = tk.Entry(self.find_bar, textvariable=self.find_var)
+        self.find_entry.grid(row=0, column=1, sticky="ew", padx=(6, 8))
+        tk.Label(self.find_bar, textvariable=self.find_status_var, width=12).grid(row=0, column=2)
+        tk.Button(self.find_bar, text="上一个", command=lambda: self._navigate_find(-1)).grid(row=0, column=3)
+        tk.Button(self.find_bar, text="下一个", command=lambda: self._navigate_find(1)).grid(row=0, column=4, padx=4)
+        tk.Button(self.find_bar, text="关闭", command=self._hide_find_bar).grid(row=0, column=5)
+        self.find_entry.bind("<Return>", lambda event: self._navigate_find(1))
+        self.find_entry.bind("<Shift-Return>", lambda event: self._navigate_find(-1))
+        self.find_bar.grid_remove()
 
         self.horizontal_scrollbar = tk.Scrollbar(editor_frame, orient="horizontal")
         self.text_box = ScrolledText(
@@ -134,11 +157,125 @@ class MarkdownToWordApp:
             wrap=self._current_markdown_wrap(),
             font=("Consolas", 11),
             xscrollcommand=self.horizontal_scrollbar.set,
+            undo=True,
+            autoseparators=True,
+            maxundo=-1,
         )
         self.horizontal_scrollbar.config(command=self.text_box.xview)
-        self.text_box.grid(row=0, column=0, sticky="nsew")
-        self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        self.text_box.grid(row=1, column=0, sticky="nsew")
+        self.horizontal_scrollbar.grid(row=2, column=0, sticky="ew")
+        self.text_box.tag_configure("find_match", background="#FFF2A8", foreground="#000000")
+        self.text_box.tag_configure("find_current", background="#F7B955", foreground="#000000")
+        for key in ("<Control-z>", "<Control-Z>"):
+            self.text_box.bind(key, self._undo_edit)
+        for key in ("<Control-y>", "<Control-Y>"):
+            self.text_box.bind(key, self._redo_edit)
+        for key in ("<Control-f>", "<Control-F>"):
+            self.text_box.bind(key, self._show_find_bar)
+        self.text_box.bind("<<Modified>>", self._on_editor_modified)
+        self.find_var.trace_add("write", self._schedule_find_refresh)
         self._sync_markdown_wrap()
+
+    def _undo_edit(self, _event: tk.Event | None = None) -> str:
+        try:
+            self.text_box.edit_undo()
+        except tk.TclError:
+            pass  # An empty undo history is harmless.
+        return "break"
+
+    def _redo_edit(self, _event: tk.Event | None = None) -> str:
+        try:
+            self.text_box.edit_redo()
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _show_find_bar(self, _event: tk.Event | None = None) -> str:
+        self._find_visible = True
+        self.find_bar.grid()
+        try:
+            selection = self.text_box.get("sel.first", "sel.last")
+            if "\n" not in selection:
+                self.find_var.set(selection)
+        except tk.TclError:
+            pass
+        self._refresh_find()
+        self.find_entry.focus_set()
+        self.find_entry.selection_range(0, "end")
+        return "break"
+
+    def _hide_find_bar(self, _event: tk.Event | None = None) -> str | None:
+        if not self._find_visible:
+            return None
+        self._find_visible = False
+        self._cancel_find_refresh()
+        self.find_bar.grid_remove()
+        self.text_box.tag_remove("find_match", "1.0", "end")
+        self.text_box.tag_remove("find_current", "1.0", "end")
+        self._find_matches = []
+        self._find_index = -1
+        self.text_box.focus_set()
+        return "break"
+
+    def _on_editor_modified(self, _event: tk.Event) -> None:
+        if self.text_box.edit_modified():
+            self.text_box.edit_modified(False)
+            self._schedule_find_refresh()
+
+    def _cancel_find_refresh(self) -> None:
+        if self._find_refresh_job is not None:
+            self.root.after_cancel(self._find_refresh_job)
+            self._find_refresh_job = None
+
+    def _schedule_find_refresh(self, *_args) -> None:
+        self._cancel_find_refresh()
+        if self._find_visible:
+            self._find_refresh_job = self.root.after(80, self._refresh_find)
+
+    def _refresh_find(self) -> None:
+        self._cancel_find_refresh()
+        if not self._find_visible:
+            return
+        anchor = self.text_box.index("insert")
+        self.text_box.tag_remove("find_match", "1.0", "end")
+        self.text_box.tag_remove("find_current", "1.0", "end")
+        self._find_matches = []
+        self._find_index = -1
+        query = self.find_var.get()
+        if query:
+            position = "1.0"
+            while match := self.text_box.search(query, position, stopindex="end-1c", nocase=True, exact=True):
+                # Tk search counts UTF-16 units on Windows; index offsets count
+                # characters, so use the literal query's length (also for emoji).
+                end = self.text_box.index(f"{match}+{len(query)}c")
+                self._find_matches.append((match, end))
+                self.text_box.tag_add("find_match", match, end)
+                position = end
+        if self._find_matches:
+            index = next(
+                (i for i, (start, _) in enumerate(self._find_matches) if self.text_box.compare(start, ">=", anchor)),
+                0,
+            )
+            self._activate_find_match(index)
+        else:
+            self.find_status_var.set("0 / 0")
+
+    def _activate_find_match(self, index: int) -> None:
+        self._find_index = index % len(self._find_matches)
+        start, end = self._find_matches[self._find_index]
+        self.text_box.tag_remove("find_current", "1.0", "end")
+        self.text_box.tag_add("find_current", start, end)
+        self.text_box.tag_raise("find_current")
+        self.text_box.mark_set("insert", start)
+        self.text_box.see(start)
+        self.find_status_var.set(f"{self._find_index + 1} / {len(self._find_matches)}")
+
+    def _navigate_find(self, direction: int) -> str:
+        if self._find_refresh_job is not None:
+            self._refresh_find()
+        if self._find_matches:
+            self._activate_find_match(self._find_index + direction)
+        return "break"
 
     def _choose_output_dir(self) -> None:
         path = filedialog.askdirectory(initialdir=self.output_var.get() or str(Path.cwd()))
