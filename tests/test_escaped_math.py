@@ -65,13 +65,54 @@ class EscapedMathTests(unittest.TestCase):
                     self.assertEqual(formulas[0]["latex"], "Y_{lm}+x*o")
 
     def test_literal_text_and_native_escaped_symbols_are_preserved(self):
-        body = r"\text{file\_{id}\_name\*}+\operatorname{some\_name}+a\_b"
+        body = r"\text{file\_{id}\_name\*}+\operatorname{some\_name}"
         for width in (1, 2, 4, 8):
             with self.subTest(width=width):
                 _, formulas = self.extract("\\" * width + "(" + body + "\\" * width + ")")
                 self.assertEqual(formulas[0]["latex"], body)
         _, formulas = self.extract(r"$Y\_{lm}+x\*o$")
         self.assertEqual(formulas[0]["latex"], r"Y\_{lm}+x\*o")
+        for source in (r"$a\_b$", r"\(a\_b\)"):
+            _, formulas = self.extract(source)
+            self.assertEqual(formulas[0]["latex"], r"a\_b")
+
+    def test_copied_unbraced_subscripts(self):
+        for width in (2, 4, 8):
+            for escape_width in (1, 2, 3, 4):
+                for body, expected in (
+                    (r"[x]\_n", "[x]_n"), (r"x\_0", "x_0"),
+                    (r"a\_b", "a_b"), (r"x\_\alpha", r"x_\alpha"),
+                    (r"[x]\_n^2", "[x]_n^2"), (r"\sum\_k x^k", r"\sum_k x^k"),
+                ):
+                    with self.subTest(width=width, escape_width=escape_width, body=body):
+                        copied = body.replace(r"\_", "\\" * escape_width + "_")
+                        _, formulas = self.extract("\\" * width + "(" + copied + "\\" * width + ")")
+                        self.assertEqual(formulas[0]["latex"], expected)
+
+    def test_falling_factorial_exports_real_subscripts(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            for width, escape_width, command_width in ((2, 1, 1), (4, 3, 1), (4, 3, 4)):
+                with self.subTest(width=width, escape_width=escape_width, command_width=command_width):
+                    slashes = "\\" * width
+                    underscore = "\\" * escape_width + "_"
+                    source = (
+                        "PPT 中定义：\n\n" + slashes + "[ [x]" + underscore + "n="
+                        + "\\" * command_width + "sum" + underscore + "{k=0}^{n}S_1(n,k)x^k " + slashes + "]"
+                        + "\n\n其中，" + slashes + "([x]" + underscore + "n" + slashes + ") 表示下降阶乘："
+                    )
+                    output = self.converter.convert(
+                        source, AppConfig(output_dir=output_dir, asset_root=str(Path.cwd()))
+                    )
+                    document = Document(output)
+                    self.assertEqual(self.converter.last_warnings, [])
+                    self.assertEqual(len(document.element.xpath(".//m:oMath")), 2)
+                    math_text = "".join(document.element.xpath(".//m:t/text()"))
+                    self.assertNotIn("_", math_text)
+                    self.assertNotIn("\\", math_text)
+                    subscripts = ["".join(node.itertext()) for node in document.element.xpath(".//m:sub")]
+                    self.assertEqual(subscripts.count("n"), 2)
+                    self.assertIn("k=0", subscripts)
+                    self.assertIn("1", subscripts)
 
     def test_tilde_and_hat_are_word_accents(self):
         for command, character in (("tilde", "\u0303"), ("widetilde", "\u0303"), ("hat", "\u0302"), ("widehat", "\u0302")):

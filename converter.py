@@ -1489,14 +1489,9 @@ class MarkdownToDocxConverter:
 
     def _unescape_math_markdown_symbols(self, latex: str) -> str:
         def restore_symbols(segment: str) -> str:
-            def replace(match: re.Match[str]) -> str:
-                marker = match.group("marker")
-                following = segment[match.end() : match.end() + 1]
-                if marker == "*" or len(match.group("slashes")) > 1 or following == "{":
-                    return marker
-                return match.group(0)
-
-            return re.sub(r"(?P<slashes>\\+)(?P<marker>[_*])", replace, segment)
+            # Copied math can escape both grouped and single-token subscripts:
+            # \_{lm}, \_n, \_0, and \_\alpha all need their Markdown escape removed.
+            return re.sub(r"\\+([_*])", r"\1", segment)
 
         # Literal underscores and stars inside text commands retain their
         # LaTeX meaning, including when text arguments contain nested braces.
