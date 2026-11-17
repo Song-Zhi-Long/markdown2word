@@ -498,11 +498,11 @@ class MarkdownToDocxConverter:
                 self._convert_inline_nary_to_scripts(math_node)
             else:
                 self._convert_display_nary_runs(math_node)
-            # Matrices can also live inside boxes, fractions, or other bases.
+            # Stacks can also live inside boxes, fractions, or other bases.
             # Repair inner containers first so outer repairs copy finished math.
-            matrix_containers = math_node.xpath(".//*[local-name()='m' or local-name()='eqArr']/..")
-            for container in reversed(matrix_containers):
-                self._repair_matrix_delimiter(container)
+            delimiter_containers = math_node.xpath(".//*[local-name()='m' or local-name()='eqArr' or local-name()='f']/..")
+            for container in reversed(delimiter_containers):
+                self._repair_stacked_expression_delimiters(container)
                 self._repair_leading_matrix_delimiter(container)
             self._tune_nary_style(math_node)
             self._convert_omml_accents(math_node)
@@ -822,9 +822,9 @@ class MarkdownToDocxConverter:
         remainder = text[match.start(1) :]
         return prefix, remainder
 
-    def _repair_matrix_delimiter(self, omath: etree._Element) -> None:
+    def _repair_stacked_expression_delimiters(self, omath: etree._Element) -> None:
         bracket_pairs = {"(": ")", "[": "]", "{": "}", "|": "|"}
-        target_tags = {"m", "eqarr"}
+        target_tags = {"m", "eqarr", "f"}
         changed = True
 
         while changed:
@@ -833,6 +833,12 @@ class MarkdownToDocxConverter:
             for idx, expr_node in enumerate(children):
                 if self._tag_name(expr_node) not in target_tags:
                     continue
+                if self._tag_name(expr_node) == "f":
+                    # Binomials use a stacked fraction without a fraction bar.
+                    # Keep ordinary fractions and their fixed parentheses intact.
+                    fraction_type = expr_node.find(f"{qn('m:fPr')}/{qn('m:type')}")
+                    if fraction_type is None or fraction_type.get(qn("m:val")) != "noBar":
+                        continue
                 if idx == 0 or idx >= len(children) - 1:
                     continue
 
