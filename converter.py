@@ -765,6 +765,7 @@ class MarkdownToDocxConverter:
     def _collect_nary_operand_siblings(self, parent: etree._Element, start_index: int) -> List[etree._Element]:
         collected: List[etree._Element] = []
         bracket_depth = 0
+        has_operand = False
 
         while start_index < len(parent):
             sibling = parent[start_index]
@@ -779,15 +780,13 @@ class MarkdownToDocxConverter:
 
             if tag == "r":
                 text = self._get_run_text(sibling)
-                if bracket_depth == 0 and self._starts_with_nary_stop_operator(text):
-                    break
-
-                prefix, remainder = self._split_trailing_nary_stop_operator(text) if bracket_depth == 0 else (text, "")
+                prefix, remainder = self._split_nary_operand_run(text, bracket_depth, has_operand)
                 if prefix:
                     operand_run = deepcopy(sibling)
                     self._set_run_text(operand_run, prefix)
                     collected.append(operand_run)
                     bracket_depth = max(0, bracket_depth + self._math_text_bracket_delta(prefix))
+                    has_operand = has_operand or bool(prefix.strip(" \t\r\n+-−±∓"))
 
                     if remainder:
                         self._set_run_text(sibling, remainder)
@@ -799,6 +798,7 @@ class MarkdownToDocxConverter:
 
             collected.append(sibling)
             bracket_depth = max(0, bracket_depth + self._math_text_bracket_delta(self._math_node_text(sibling)))
+            has_operand = True
             parent.remove(sibling)
 
         return collected
@@ -811,16 +811,22 @@ class MarkdownToDocxConverter:
         closes = text.count(")") + text.count("]") + text.count("}")
         return opens - closes
 
-    def _starts_with_nary_stop_operator(self, text: str) -> bool:
-        return bool(text and text.lstrip().startswith(("+", "-", "−", "±", "∓")))
-
-    def _split_trailing_nary_stop_operator(self, text: str) -> Tuple[str, str]:
-        match = re.search(r"([+\-−±∓])\s*$", text or "")
-        if not match:
-            return text, ""
-        prefix = text[: match.start(1)].rstrip()
-        remainder = text[match.start(1) :]
-        return prefix, remainder
+    def _split_nary_operand_run(self, text: str, bracket_depth: int, has_operand: bool) -> Tuple[str, str]:
+        # A leading sign belongs to the summand; a later top-level + or -
+        # separates terms. Runs may combine an opening bracket with a minus
+        # ("(1−") or a closing bracket with an external addition (")+c").
+        for index, char in enumerate(text):
+            if char in "([{":
+                bracket_depth += 1
+            elif char in ")]}":
+                bracket_depth = max(0, bracket_depth - 1)
+            elif char in "+-−±∓" and bracket_depth == 0:
+                if has_operand:
+                    return text[:index], text[index:]
+                continue
+            if not char.isspace():
+                has_operand = True
+        return text, ""
 
     def _repair_stacked_expression_delimiters(self, omath: etree._Element) -> None:
         bracket_pairs = {"(": ")", "[": "]", "{": "}", "|": "|"}
