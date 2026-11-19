@@ -15,7 +15,7 @@ from docx import Document
 from docx.document import Document as _DocumentType
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -2124,14 +2124,8 @@ class MarkdownToDocxConverter:
                     run.text = f"${latex}$"
             else:
                 if equation_tag:
-                    self._apply_tagged_display_math_paragraph_format(paragraph)
-                    paragraph.add_run("\t")
-                    self._append_omml_as_inline_run(paragraph, omml, latex)
-                    run = paragraph.add_run(f"\t{equation_tag}")
-                    self._apply_run_style(run, TextStyle(size_pt=BODY_SIZE_PT))
-                    return
-                else:
-                    self._apply_display_math_paragraph_format(paragraph)
+                    self._add_display_equation_tag(omml, equation_tag)
+                self._apply_display_math_paragraph_format(paragraph)
                 if local_tag == "omathpara":
                     self._set_omathpara_center(omml)
                     paragraph._p.append(omml)
@@ -2184,21 +2178,43 @@ class MarkdownToDocxConverter:
             return cleaned_latex, tag_text
         return cleaned_latex, f"({tag_text})"
 
-    def _append_omml_as_inline_run(self, paragraph, omml: etree._Element, latex: str) -> None:
-        run = paragraph.add_run()
-        self._set_run_fonts(run, LATIN_FONT, CJK_FONT)
+    def _add_display_equation_tag(self, omml: etree._Element, tag: str) -> None:
+        math_nodes = list(self._iter_omath_nodes(omml))
+        if not math_nodes:
+            raise ValueError("Cannot add a number to an empty equation.")
 
-        local_tag = self._tag_name(omml)
-        if local_tag == "omathpara":
-            math_nodes = omml.xpath(".//*[local-name()='oMath']")
-            if math_nodes:
-                run._r.append(deepcopy(math_nodes[0]))
-                return
-        elif local_tag == "omath":
-            run._r.append(deepcopy(omml))
-            return
+        # Word's native #(number) layout keeps the equation in display mode.
+        # Ordinary text or tabs beside oMath force inline layout, shrinking
+        # fractions and moving summation limits to the side despite limLoc.
+        math_node = math_nodes[0]
+        equation_array = OxmlElement("m:eqArr")
+        properties = OxmlElement("m:eqArrPr")
+        max_distance = OxmlElement("m:maxDist")
+        max_distance.set(qn("m:val"), "1")
+        properties.append(max_distance)
+        equation_array.append(properties)
 
-        run.text = f"${latex}$"
+        expression = OxmlElement("m:e")
+        for child in list(math_node):
+            expression.append(child)
+
+        marker_run = OxmlElement("m:r")
+        marker_text = OxmlElement("m:t")
+        marker_text.text = "#"
+        marker_run.append(marker_text)
+        expression.append(marker_run)
+
+        tag_run = OxmlElement("m:r")
+        tag_properties = OxmlElement("m:rPr")
+        tag_properties.append(OxmlElement("m:nor"))
+        tag_run.append(tag_properties)
+        tag_text = OxmlElement("m:t")
+        tag_text.text = tag
+        tag_run.append(tag_text)
+        expression.append(tag_run)
+
+        equation_array.append(expression)
+        math_node.append(equation_array)
 
     def _extract_detached_script_tokens(self, latex: str) -> Optional[List[Tuple[str, str]]]:
         stripped = latex.strip()
@@ -2233,27 +2249,6 @@ class MarkdownToDocxConverter:
     def _apply_display_math_paragraph_format(self, paragraph) -> None:
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.first_line_indent = Pt(0)
-
-    def _apply_tagged_display_math_paragraph_format(self, paragraph) -> None:
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        paragraph.paragraph_format.first_line_indent = Pt(0)
-
-        width_inches = self._page_content_width_inches()
-        left_indent = paragraph.paragraph_format.left_indent
-        right_indent = paragraph.paragraph_format.right_indent
-        if left_indent is not None:
-            width_inches -= max(0.0, left_indent.pt / 72.0)
-        if right_indent is not None:
-            width_inches -= max(0.0, right_indent.pt / 72.0)
-        width_inches = max(1.0, width_inches)
-
-        tab_stops = paragraph.paragraph_format.tab_stops
-        try:
-            tab_stops.clear_all()
-        except AttributeError:
-            pass
-        tab_stops.add_tab_stop(Inches(width_inches / 2.0), alignment=WD_TAB_ALIGNMENT.CENTER)
-        tab_stops.add_tab_stop(Inches(width_inches), alignment=WD_TAB_ALIGNMENT.RIGHT)
 
     def _apply_blockquote_paragraph_format(self, paragraph) -> None:
         paragraph.paragraph_format.left_indent = Pt(BLOCKQUOTE_LEFT_INDENT_PT)

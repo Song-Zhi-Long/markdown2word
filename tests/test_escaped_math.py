@@ -149,7 +149,7 @@ class EscapedMathTests(unittest.TestCase):
             text = "".join(document.element.xpath(".//w:t/text()"))
             self.assertNotIn("\\", text)
             for number in range(1, 5):
-                self.assertIn(f"({number})", text)
+                self.assertIn(f"({number})", math_text)
             self.assertEqual(document.paragraphs[0].style.name, "Heading 2")
 
     def test_code_and_intentionally_escaped_markdown_stay_literal(self):
