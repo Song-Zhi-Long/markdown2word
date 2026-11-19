@@ -190,8 +190,18 @@ class MarkdownToDocxConverter:
 
     def latex_to_omml(self, latex: str, display: bool) -> etree._Element:
         normalized_latex = self._preprocess_latex_for_math(latex, display)
+        normalized_latex, operator_names = self._protect_latex_operator_names(normalized_latex)
         mathml_text = latex_to_mathml(normalized_latex)
         mathml_root = etree.fromstring(mathml_text.encode("utf-8"))
+        for node in mathml_root.iter():
+            if node.text in operator_names:
+                node.text = operator_names[node.text]
+                if node.tag == f"{MATHML_TAG}mo":
+                    node.set("mathvariant", "normal")
+            elif node.text:
+                # Names inside literal text must not expose temporary markers.
+                for marker, name in operator_names.items():
+                    node.text = node.text.replace(marker, name)
         mathml_root.set("display", "block" if display else "inline")
         self._normalize_mathml_tree(mathml_root)
 
@@ -205,6 +215,24 @@ class MarkdownToDocxConverter:
         if re.search(r"\\begin\{cases\}", latex):
             self._apply_cases_matrix_layout(omml_root)
         return omml_root
+
+    def _protect_latex_operator_names(self, latex: str) -> Tuple[str, Dict[str, str]]:
+        # latex2mathml's operatorname tokenizer accepts letters but not digits.
+        # Use letter-only names until MathML conversion, then restore the names
+        # as upright operators. Keep starred/withlimits command semantics.
+        operator_names: Dict[str, str] = {}
+        pattern = re.compile(
+            r"(?P<command>\\operatorname(?:withlimits|\*)?)\s*\{(?P<name>[A-Za-z0-9\s]+)\}"
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            marker = "OPERATORNAMETOKEN" + "A" * (len(operator_names) + 1) + "END"
+            while marker in latex or marker in operator_names:
+                marker += "A"
+            operator_names[marker] = match.group("name")
+            return match.group("command") + "{" + marker + "}"
+
+        return pattern.sub(replace, latex), operator_names
 
     def _needs_aligned_matrix_layout(self, latex: str) -> bool:
         return bool(
