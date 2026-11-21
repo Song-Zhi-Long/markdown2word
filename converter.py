@@ -31,6 +31,7 @@ CAPTION_PREFIX_PATTERN = re.compile(
 )
 INLINE_MATH_TOKEN = "MATHINLINE"
 BLOCK_MATH_TOKEN = "MATHBLOCK"
+HTML_BLOCK_TAGS = {"p", "div", "center", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "pre", "blockquote", "table", "hr"}
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 MATHML_TAG = f"{{{MATHML_NS}}}"
 SCRIPT_MATH_CHARS = {
@@ -1268,7 +1269,39 @@ class MarkdownToDocxConverter:
         list_ready_text = self._split_reset_ordered_lists(boundary_ready_text)
         caption_ready_text = self._merge_caption_headings(list_ready_text)
         math_ready_text = self._extract_math_tokens(caption_ready_text)
-        return self._restore_tokens(math_ready_text, code_tokens)
+        aligned_text = self._normalize_aligned_html_blocks(math_ready_text)
+        return self._restore_tokens(aligned_text, code_tokens)
+
+    def _normalize_aligned_html_blocks(self, text: str) -> str:
+        tag_line = re.compile(
+            r'^(?P<indent>[ \t]{0,3})(?P<escape>\\?)(?P<tag></?div\b[^>]*>)[ \t]*(?P<trailer>\\?)[ \t]*$',
+            re.IGNORECASE,
+        )
+        # Track copied regions separately so intentional escapes elsewhere stay
+        # literal. Code and formulas are already masked before this step.
+        containers: List[Tuple[bool, bool]] = []
+        result: List[str] = []
+        for line in text.splitlines():
+            match = tag_line.match(line)
+            if match:
+                tag = match.group("tag")
+                if tag.lower().startswith("</"):
+                    aligned, copied = containers.pop() if containers else (False, False)
+                    result.append(match.group("indent") + tag if aligned or copied else line)
+                else:
+                    node = lxml_html.fragment_fromstring(tag + "</div>")
+                    aligned = self._extract_alignment(node) is not None
+                    copied = (containers[-1][1] if containers else False) or bool(aligned and match.group("escape"))
+                    containers.append((aligned, copied))
+                    if aligned and node.get("markdown") is None:
+                        tag = tag[:-1] + ' markdown="1">'
+                    result.append(match.group("indent") + tag if aligned or copied else line)
+                continue
+            if containers and containers[-1][1] and not line.startswith(("    ", "\t")):
+                line = re.sub(r"(?<!\\)\\[ \t]*$", "", line)
+                line = line.replace(r"\*\*", "**")
+            result.append(line)
+        return "\n".join(result)
 
     def _normalize_escaped_markdown_copy(self, text: str) -> str:
         # Recognize an escaped document copy, rather than unescaping arbitrary
@@ -1613,16 +1646,20 @@ class MarkdownToDocxConverter:
             level = int(tag[1])
             style_name = self._markdown_heading_style_name(level)
             para = container.add_paragraph(style=style_name)
-            self._apply_alignment(para, node)
             if style_name == ARTICLE_TITLE_STYLE or self._is_abstract_title(node.text_content()):
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = Pt(0)
+            self._apply_alignment(para, node)
             size = self._markdown_heading_size(level)
             self._render_inline_node(node, para, container, config, TextStyle(size_pt=size))
             return
 
         if tag in {"p", "div", "center"}:
             if not node.text_content().strip() and not node.xpath(".//*[local-name()='img']"):
+                return
+
+            if tag in {"div", "center"} and any(self._tag_name(child) in HTML_BLOCK_TAGS for child in node):
+                self._render_html_container(node, container, config)
                 return
 
             single_block = self._single_block_math_token(node)
@@ -1643,8 +1680,6 @@ class MarkdownToDocxConverter:
             elif self._is_image_only_block(node) or self._is_abstract_title(node.text_content()):
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = Pt(0)
-            else:
-                self._apply_alignment(para, node)
 
             style = TextStyle(size_pt=BODY_SIZE_PT)
             if self._is_caption_text(node.text_content()):
@@ -1663,6 +1698,8 @@ class MarkdownToDocxConverter:
             else:
                 para.paragraph_format.first_line_indent = Pt(0)
 
+            if not self._is_image_only_block(node):
+                self._apply_alignment(para, node)
             self._render_inline_node(node, para, container, config, style)
             return
 
@@ -1699,6 +1736,34 @@ class MarkdownToDocxConverter:
 
         for child in node:
             self._render_block(child, container, config)
+
+    def _render_html_container(self, node: etree._Element, container, config: AppConfig) -> None:
+        # Preserve block boundaries and group intervening inline content into
+        # real paragraphs attached to this node, so alignment inheritance works.
+        pending = lxml_html.Element("p")
+        pending.text = node.text
+        node.text = None
+
+        def flush(before=None):
+            nonlocal pending
+            if (pending.text or "").strip() or len(pending):
+                if before is None:
+                    node.append(pending)
+                else:
+                    node.insert(node.index(before), pending)
+                self._render_block(pending, container, config)
+            pending = lxml_html.Element("p")
+
+        for child in list(node):
+            if self._tag_name(child) in HTML_BLOCK_TAGS:
+                flush(before=child)
+                tail = child.tail
+                child.tail = None
+                self._render_block(child, container, config)
+                pending.text = tail
+            else:
+                pending.append(child)
+        flush()
 
     def _render_code_block(self, node: etree._Element, container) -> None:
         code_text = (node.text_content() or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -1877,6 +1942,7 @@ class MarkdownToDocxConverter:
                 continue
             para = container.add_paragraph()
             self._apply_plain_paragraph_format(para, line, config)
+            self._apply_alignment(para, node)
             style = TextStyle(size_pt=CAPTION_SIZE_PT if self._is_caption_text(line) else BODY_SIZE_PT)
             self._append_text(para, container, line, style)
             rendered_any = True
@@ -2542,9 +2608,18 @@ class MarkdownToDocxConverter:
         return container.add_paragraph()
 
     def _apply_alignment(self, paragraph, node: etree._Element) -> None:
-        align = self._extract_alignment(node)
-        if align is not None:
-            paragraph.alignment = align
+        current = node
+        while current is not None:
+            align = self._extract_alignment(current)
+            if align is None and self._tag_name(current) == "center":
+                align = WD_ALIGN_PARAGRAPH.CENTER
+            if align is not None:
+                # "left" means flush first line while retaining justified body
+                # text. Explicit HTML layout overrides the global indent option.
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY if align == WD_ALIGN_PARAGRAPH.LEFT else align
+                paragraph.paragraph_format.first_line_indent = Pt(0)
+                return
+            current = current.getparent()
 
     def _extract_alignment(self, node: etree._Element) -> Optional[WD_ALIGN_PARAGRAPH]:
         align_attr = (node.get("align") or "").strip().lower()
