@@ -158,8 +158,7 @@ class MarkdownToDocxConverter:
 
         self.last_warnings = []
         prepared_markdown = self._prepare_markdown(markdown_text)
-        html_text = markdown.markdown(
-            prepared_markdown,
+        markdown_parser = markdown.Markdown(
             extensions=[
                 "tables",
                 "fenced_code",
@@ -168,6 +167,10 @@ class MarkdownToDocxConverter:
             ],
             output_format="html5",
         )
+        # Decode copied email escapes through Markdown's normal escape rules,
+        # preserving paired backslashes, code regions, and extracted formulas.
+        markdown_parser.ESCAPED_CHARS = [*markdown_parser.ESCAPED_CHARS, "@"]
+        html_text = markdown_parser.convert(prepared_markdown)
 
         document = Document()
         self._document = document
