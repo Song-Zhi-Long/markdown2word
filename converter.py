@@ -415,9 +415,33 @@ class MarkdownToDocxConverter:
         return -1
 
     def _normalize_mathml_tree(self, root: etree._Element) -> None:
+        self._repair_mathml_matrix_script_bases(root)
         self._normalize_mathml_script_chars(root)
         self._convert_mathml_spaces(root)
         self._convert_mathml_stretchy_fences(root)
+
+    def _repair_mathml_matrix_script_bases(self, root: etree._Element) -> None:
+        # Matrix environments expand to opening fence, table, closing fence.
+        # latex2mathml may place all three directly in a script node, making
+        # the table its subscript and dropping the real script and right fence.
+        script_arity = {"msub": 2, "msup": 2, "msubsup": 3}
+        fence_pairs = {"[": "]", "(": ")", "{": "}", "|": "|", "‖": "‖", "∥": "∥"}
+        for node in reversed(list(root.iter())):
+            expected = script_arity.get(self._mathml_local_name(node))
+            children = list(node)
+            if expected is None or len(children) != expected + 2:
+                continue
+            if [self._mathml_local_name(child) for child in children[:3]] != ["mo", "mtable", "mo"]:
+                continue
+            opening = self._mathml_text(children[0])
+            closing = self._mathml_text(children[2])
+            if fence_pairs.get(opening) != closing:
+                continue
+            base = etree.Element(f"{MATHML_TAG}mfenced", open=opening, close=closing, separators="")
+            base.append(children[1])
+            node.remove(children[0])
+            node.remove(children[2])
+            node.insert(0, base)
 
     def _normalize_mathml_script_chars(self, root: etree._Element) -> None:
         for node in root.xpath(".//*[local-name()='mi']"):
