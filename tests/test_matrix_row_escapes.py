@@ -39,6 +39,36 @@ class MatrixRowEscapeTests(unittest.TestCase):
         ], [['2', '1', '10'], ['3400', '2500', '10']])
         self.assertEqual(len(equations[2].xpath('.//*[local-name()="d"]')), 3)
 
+    def test_exact_camera_projection_treats_v_as_a_variable(self):
+        source = (Path(__file__).parent / 'fixtures/camera_projection_escaped.md').read_text(encoding='utf-8')
+        with tempfile.TemporaryDirectory() as output_dir:
+            output = self.converter.convert(source, AppConfig(output_dir, str(Path.cwd())))
+            document = Document(output)
+        self.assertEqual(self.converter.last_warnings, [])
+        self.assertNotIn('\\', math_text(document.element))
+        arrays = document.element.xpath('.//m:eqArr')
+        self.assertEqual(len(arrays), 2)
+        self.assertEqual([
+            [math_text(row).strip() for row in array.xpath('./*[local-name()="e"]')]
+            for array in arrays
+        ], [['u', 'v', '1'], ['X', 'Y', 'Z', '1']])
+
+    def test_accent_letters_without_arguments_are_plain_matrix_variables(self):
+        for variable in ('v', 'u', 'b', 'c', 'd', 'k', 'r', 't', 'H'):
+            for ending in ('', ' ', '_i', '+1'):
+                with self.subTest(variable=variable, ending=ending):
+                    latex = r'\begin{bmatrix}1\\' + '\\' + variable + ending + r'\end{bmatrix}'
+                    normalized = latex.replace('\\\\\\' + variable, '\\\\' + variable)
+                    self.assertEqual(self.converter._preprocess_latex_for_math(latex, True), normalized)
+                    self.assertNotIn('\\', math_text(self.converter.latex_to_omml(latex, True)))
+
+    def test_accent_commands_with_arguments_are_preserved(self):
+        for argument in ('{a}', ' a', r'\alpha'):
+            for accent in ('v', 'u', 'c', 'H'):
+                with self.subTest(accent=accent, argument=argument):
+                    latex = r'\begin{bmatrix}1\\' + '\\' + accent + argument + r'\\2\end{bmatrix}'
+                    self.assertEqual(self.converter._preprocess_latex_for_math(latex, True), latex)
+
     def test_copied_rows_before_variables_numbers_and_signs(self):
         for body, rows in (
             (r'x_i\\\y_i\\\z_i', ['xi', 'yi', 'zi']),

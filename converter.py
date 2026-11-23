@@ -274,15 +274,23 @@ class MarkdownToDocxConverter:
         # Three slashes may be a copied row break plus an extra escape before
         # a plain variable/number. Preserve row breaks followed by real commands
         # such as \alpha, \vdots, accents, dotless letters, or custom macros.
-        single_letter_commands = {"i", "j", "l", "o", "L", "O", "P", "S", "b", "c", "d", "k", "r", "t", "u", "v", "H"}
+        single_letter_commands = {"i", "j", "l", "o", "L", "O", "P", "S"}
+        accent_commands = {"b", "c", "d", "k", "r", "t", "u", "v", "H"}
 
         def normalize(segment: str) -> str:
             def replace(match: re.Match[str]) -> str:
                 token = match.group("next")
+                following = segment[match.end():].lstrip()
+                # Accent commands need an argument. At the end of a matrix
+                # cell, \v or \u instead denotes a copied plain v/u variable.
+                accent = token in accent_commands and re.match(
+                    r"(?:\{|[A-Za-z0-9]|\\(?!begin\b|end\b)[A-Za-z]+)", following
+                ) is not None
                 variable = (
                     len(token) == 1
                     and token.isalpha()
                     and token not in single_letter_commands
+                    and not accent
                     and latex_symbol("\\" + token) is None
                 )
                 if token.isdigit() or token in {"+", "-"} or variable:
