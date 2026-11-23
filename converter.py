@@ -8,7 +8,7 @@ import urllib.request
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import markdown
 from docx import Document
@@ -21,6 +21,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 from latex2mathml.converter import convert as latex_to_mathml
+from latex2mathml.symbols_parser import convert_symbol as latex_symbol
 from lxml import etree, html as lxml_html
 from PIL import Image
 
@@ -245,7 +246,7 @@ class MarkdownToDocxConverter:
         )
 
     def _preprocess_latex_for_math(self, latex: str, display: bool) -> str:
-        normalized = latex
+        normalized = self._normalize_copied_matrix_row_prefixes(latex)
 
         normalized = re.sub(r"\\\\\s*\[[^\]]+\]", r"\\\\", normalized)
         normalized = self._normalize_evaluation_bar_after_fraction(normalized)
@@ -266,6 +267,31 @@ class MarkdownToDocxConverter:
             )
 
         return normalized
+
+    def _normalize_copied_matrix_row_prefixes(self, latex: str) -> str:
+        if not re.search(r"(?<!\\)\\begin\{(?:[pbBvV]?matrix|smallmatrix|array|cases|aligned|align\*?|split)\}", latex):
+            return latex
+        # Three slashes may be a copied row break plus an extra escape before
+        # a plain variable/number. Preserve row breaks followed by real commands
+        # such as \alpha, \vdots, accents, dotless letters, or custom macros.
+        single_letter_commands = {"i", "j", "l", "o", "L", "O", "P", "S", "b", "c", "d", "k", "r", "t", "u", "v", "H"}
+
+        def normalize(segment: str) -> str:
+            def replace(match: re.Match[str]) -> str:
+                token = match.group("next")
+                variable = (
+                    len(token) == 1
+                    and token.isalpha()
+                    and token not in single_letter_commands
+                    and latex_symbol("\\" + token) is None
+                )
+                if token.isdigit() or token in {"+", "-"} or variable:
+                    return r"\\" + token
+                return match.group(0)
+
+            return re.sub(r"(?<!\\)\\{3}(?P<next>[A-Za-z]+|\d|[+-](?=\d))", replace, segment)
+
+        return self._transform_math_outside_text_commands(latex, normalize)
 
     def _normalize_evaluation_bar_after_fraction(self, latex: str) -> str:
         pattern = re.compile(
@@ -1593,9 +1619,12 @@ class MarkdownToDocxConverter:
             # \_{lm}, \_n, \_0, and \_\alpha all need their Markdown escape removed.
             return re.sub(r"\\+([_*])", r"\1", segment)
 
+        return self._transform_math_outside_text_commands(latex, restore_symbols)
+
+    def _transform_math_outside_text_commands(self, latex: str, transform: Callable[[str], str]) -> str:
         # Literal underscores and stars inside text commands retain their
         # LaTeX meaning, including when text arguments contain nested braces.
-        text_command = re.compile(r"(?<!\\)\\(?:text(?:rm|bf|it|sf|tt|normal)?|mbox|operatorname)\*?\s*\{")
+        text_command = re.compile(r"(?<!\\)(?:\\{2})*\\(?:text(?:rm|bf|it|sf|tt|normal)?|mbox|operatorname)\*?\s*\{")
         pieces: List[str] = []
         position = 0
         for match in text_command.finditer(latex):
@@ -1613,10 +1642,10 @@ class MarkdownToDocxConverter:
                 elif char == "}":
                     depth -= 1
                 end += 1
-            pieces.append(restore_symbols(latex[position : match.start()]))
+            pieces.append(transform(latex[position : match.start()]))
             pieces.append(latex[match.start() : end])
             position = end
-        pieces.append(restore_symbols(latex[position:]))
+        pieces.append(transform(latex[position:]))
         return "".join(pieces)
 
     def _strip_blockquote_markers(self, text: str) -> str:
