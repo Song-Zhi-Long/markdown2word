@@ -1619,6 +1619,17 @@ class MarkdownToDocxConverter:
                 return slashes
 
             latex = re.sub(r"\\{2,}", unescape, latex)
+
+        def restore_delimiter_escapes(segment: str) -> str:
+            # Decode copied \left\\| / \right\\| only in delimiter context.
+            # A matrix row break followed by a plain | must remain unchanged.
+            return re.sub(
+                r"(?P<command>(?<!\\)(?:\\{2})*\\(?:left|right|middle|(?:big|Big|bigg|Bigg)[lrm]?)\s*)\\{2,}(?=\|)",
+                lambda match: match.group("command") + "\\",
+                segment,
+            )
+
+        latex = self._transform_math_outside_text_commands(latex, restore_delimiter_escapes)
         return self._unescape_math_markdown_symbols(latex)
 
     def _unescape_math_markdown_symbols(self, latex: str) -> str:
