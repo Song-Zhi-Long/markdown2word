@@ -5,6 +5,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from docx.document import Document as _DocumentType
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.image.image import Image as DocxImage
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -33,6 +35,16 @@ CAPTION_PREFIX_PATTERN = re.compile(
 INLINE_MATH_TOKEN = "MATHINLINE"
 BLOCK_MATH_TOKEN = "MATHBLOCK"
 HTML_BLOCK_TAGS = {"p", "div", "center", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "pre", "blockquote", "table", "hr"}
+IMAGE_SUFFIXES_BY_MEDIA_TYPE = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/svg+xml": ".svg",
+}
+IMAGE_LINK_SUFFIXES = {".jpeg", ".tif", *IMAGE_SUFFIXES_BY_MEDIA_TYPE.values()}
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 MATHML_TAG = f"{{{MATHML_NS}}}"
 SCRIPT_MATH_CHARS = {
@@ -180,8 +192,10 @@ class MarkdownToDocxConverter:
         self._configure_document_styles(document)
 
         root = lxml_html.fragment_fromstring(html_text, create_parent="div")
-        for child in root:
-            self._render_block(child, document, config)
+        with tempfile.TemporaryDirectory(prefix="markdown2word-images-") as image_dir:
+            self._promote_image_links(root, config.asset_root, image_dir)
+            for child in root:
+                self._render_block(child, document, config)
 
         output_filename = self._build_output_filename(markdown_text, config, output_filename)
         output_path = self._build_available_output_path(output_dir, output_filename)
@@ -2570,6 +2584,46 @@ class MarkdownToDocxConverter:
             para_pr.append(jc)
         jc.set(qn("m:val"), justification)
 
+    def _promote_image_links(self, root: etree._Element, asset_root: str, image_dir: str) -> None:
+        anchors_by_href: Dict[str, List[etree._Element]] = {}
+        for anchor in root.xpath(".//a[@href and not(.//img)]"):
+            href = anchor.get("href").strip()
+            if href and not href.startswith("#"):
+                anchors_by_href.setdefault(href, []).append(anchor)
+        if not anchors_by_href:
+            return
+
+        def prepare(href: str) -> Optional[Path]:
+            return self._prepare_image_link(href, asset_root, image_dir)
+
+        with ThreadPoolExecutor(max_workers=6) as workers:
+            for href, path in zip(anchors_by_href, workers.map(prepare, anchors_by_href)):
+                if path is None:
+                    continue
+                for anchor in anchors_by_href[href]:
+                    image = lxml_html.Element("img", src=str(path), alt=anchor.text_content())
+                    image.tail = anchor.tail
+                    anchor.getparent().replace(anchor, image)
+
+    def _prepare_image_link(self, href: str, asset_root: str, image_dir: str) -> Optional[Path]:
+        try:
+            if self._is_remote_url(href):
+                path = self._download_remote_image(href, image_dir=image_dir)
+            else:
+                path = self.resolve_image_path(href, asset_root)
+                if path is None and "%" in href:
+                    path = self.resolve_image_path(urllib.parse.unquote(href), asset_root)
+            if path is None or not path.is_file():
+                return None
+            if path.suffix.lower() == ".svg":
+                path, _ = self._convert_svg_to_png(path, image_dir)
+            # Check that Word's image writer can read the actual payload.
+            DocxImage.from_file(str(path))
+            return path
+        except Exception:
+            # A link can still be useful if the resource cannot be embedded.
+            return None
+
     def _insert_image(self, paragraph, image_node: etree._Element, config: AppConfig) -> None:
         src = image_node.get("src", "").strip()
         temp_paths: List[Path] = []
@@ -2577,7 +2631,8 @@ class MarkdownToDocxConverter:
         try:
             if self._is_remote_url(src):
                 resolved = self._download_remote_image(src)
-                temp_paths.append(resolved)
+                if resolved is not None:
+                    temp_paths.append(resolved)
             else:
                 resolved = self.resolve_image_path(src, config.asset_root)
 
@@ -2619,36 +2674,31 @@ class MarkdownToDocxConverter:
     def _is_remote_url(self, src: str) -> bool:
         return src.lower().startswith(("http://", "https://"))
 
-    def _download_remote_image(self, src: str) -> Path:
+    def _download_remote_image(self, src: str, image_dir: Optional[str] = None) -> Optional[Path]:
         request = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=20) as response:
-            data = response.read()
+        with urllib.request.urlopen(request, timeout=5 if image_dir else 20) as response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            suffix = Path(urllib.parse.urlparse(src).path).suffix.lower()
+            if image_dir:
+                binary_image = content_type in {"", "application/octet-stream"} and suffix in IMAGE_LINK_SUFFIXES
+                if not (content_type.startswith("image/") or binary_image):
+                    return None
+                suffix = IMAGE_SUFFIXES_BY_MEDIA_TYPE.get(content_type, suffix)
+            suffix = suffix or IMAGE_SUFFIXES_BY_MEDIA_TYPE.get(content_type, ".img")
+            data = response.read()
 
-        suffix = Path(urllib.parse.urlparse(src).path).suffix.lower()
-        if not suffix:
-            suffix = {
-                "image/jpeg": ".jpg",
-                "image/jpg": ".jpg",
-                "image/png": ".png",
-                "image/gif": ".gif",
-                "image/bmp": ".bmp",
-                "image/tiff": ".tiff",
-                "image/svg+xml": ".svg",
-            }.get(content_type, ".img")
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, dir=image_dir) as temp_file:
             temp_file.write(data)
             return Path(temp_file.name)
 
-    def _convert_svg_to_png(self, image_path: Path) -> Tuple[Path, Path]:
+    def _convert_svg_to_png(self, image_path: Path, image_dir: Optional[str] = None) -> Tuple[Path, Path]:
         try:
             import cairosvg
         except Exception as exc:  # noqa: BLE001
             detail = self._error_detail(exc)
             raise RuntimeError(f"cairosvg 或 Cairo 图形库不可用，无法自动转换 SVG: {detail}") from exc
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png", dir=image_dir) as temp_file:
             temp_path = Path(temp_file.name)
 
         try:
