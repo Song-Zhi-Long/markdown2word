@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -76,3 +77,34 @@ class ImageLinkTests(unittest.TestCase):
         self.assertEqual(len(doc.inline_shapes), 0)
         self.assertEqual(len(doc.element.xpath('.//w:hyperlink')), 2)
         self.assertEqual(self.converter.last_warnings, [])
+
+    def test_escaped_brackets_in_link_labels_stay_literal(self):
+        (self.root / 'diagram.png').write_bytes(self.png)
+        doc = self.convert(
+            r'[Paper \[Quick Review\]](diagram.png)' + '\n\n'
+            + r'[Source \[Review\]](#source)' + '\n\n'
+            + r'\[x^2\]'
+        )
+        self.assertEqual(len(doc.inline_shapes), 1)
+        self.assertEqual(doc.element.xpath('.//w:hyperlink//w:t/text()'), ['Source [Review]'])
+        self.assertEqual(len(doc.element.xpath('.//m:oMathPara')), 1)
+
+    def test_http_404_png_body_is_embedded_and_html_body_remains_a_link(self):
+        favicon_url = 'https://example.test/favicon?domain=site.example&sz=32'
+        page_url = 'https://example.test/missing'
+
+        def open_url(request, timeout):
+            if request.full_url == favicon_url:
+                raise HTTPError(favicon_url, 404, 'Not Found', {'Content-Type': 'image/png'}, io.BytesIO(self.png))
+            self.assertEqual(request.full_url, page_url)
+            raise HTTPError(page_url, 404, 'Not Found', {'Content-Type': 'text/html'}, io.BytesIO(b'<html>Missing</html>'))
+
+        with patch('converter.urllib.request.urlopen', side_effect=open_url) as opened:
+            doc = self.convert(
+                r'[image](https://example.test/favicon?domain=site.example\&sz=32)'
+                + f'\n\n[source]({page_url})'
+            )
+        self.assertCountEqual([call.args[0].full_url for call in opened.call_args_list], [favicon_url, page_url])
+        self.assertEqual(len(doc.inline_shapes), 1)
+        link, = doc.element.xpath('.//w:hyperlink')
+        self.assertEqual(doc.part.rels[link.get(qn('r:id'))].target_ref, page_url)

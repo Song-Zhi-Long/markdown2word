@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from urllib.error import HTTPError
 
 import markdown
 from docx import Document
@@ -181,9 +182,8 @@ class MarkdownToDocxConverter:
             ],
             output_format="html5",
         )
-        # Decode copied email escapes through Markdown's normal escape rules,
-        # preserving paired backslashes, code regions, and extracted formulas.
-        markdown_parser.ESCAPED_CHARS = [*markdown_parser.ESCAPED_CHARS, "@"]
+        # Decode copied email and URL escapes through Markdown's normal rules.
+        markdown_parser.ESCAPED_CHARS = [*markdown_parser.ESCAPED_CHARS, "@", "&"]
         html_text = markdown_parser.convert(prepared_markdown)
 
         document = Document()
@@ -1664,6 +1664,17 @@ class MarkdownToDocxConverter:
         text = blockquote_display_pattern.sub(blockquote_display_replacer, text)
 
         text = re.sub(r"\$\$(.+?)\$\$", lambda m: create_token(m.group(1), True), text, flags=re.DOTALL)
+
+        # In a Markdown link label, an escaped square bracket is literal.
+        # Entities keep those brackets out of the display math extractor.
+        def protect_link_brackets(match: re.Match[str]) -> str:
+            return re.sub(r"(?<!\\)\\([\[\]])", lambda bracket: f"&#{ord(bracket[1])};", match[0])
+
+        text = re.sub(
+            r"(?<!\\)\[(?:\\[^\r\n]|[^\[\]\\\r\n]|\[[^\[\]\r\n]*\])*\](?=\([^\r\n]+\))",
+            protect_link_brackets,
+            text,
+        )
         for opening, closing, display in (("[", "]", True), ("(", ")", False)):
             pattern = (
                 r"(?<!\\)(?P<slashes>\\{1,2}|\\{4}|\\{8})" + re.escape(opening)
@@ -2709,7 +2720,15 @@ class MarkdownToDocxConverter:
 
     def _download_remote_image(self, src: str, image_dir: Optional[str] = None) -> Optional[Path]:
         request = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=5 if image_dir else 20) as response:
+        try:
+            response = urllib.request.urlopen(request, timeout=5 if image_dir else 20)
+        except HTTPError as error:
+            # Favicon services can return a usable fallback image with 404.
+            if error.code != 404 or not (error.headers.get("Content-Type") or "").lower().startswith("image/"):
+                error.close()
+                raise
+            response = error
+        with response:
             content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             suffix = Path(urllib.parse.urlparse(src).path).suffix.lower()
             if image_dir:
