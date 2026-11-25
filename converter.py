@@ -673,8 +673,43 @@ class MarkdownToDocxConverter:
         e_node = OxmlElement("m:e")
         for child in base_children:
             e_node.append(child)
+        if char == "⏟":
+            self._widen_short_underbrace(e_node)
         group_chr.append(e_node)
         return group_chr
+
+    def _widen_short_underbrace(self, base: etree._Element) -> None:
+        # Word sizes a group character to its base, ignoring the unit below.
+        # Give short identifiers symmetric space so the central cusp is visible.
+        if len(base) != 1:
+            return
+        atom = base[0]
+        kind = self._tag_name(atom)
+        if kind == "r":
+            identifier = self._get_run_text(atom)
+        elif kind in {"ssub", "ssup", "ssubsup"}:
+            parts = [part for part in atom if self._tag_name(part) in {"e", "sub", "sup"}]
+            if any(len(part) != 1 or self._tag_name(part[0]) != "r" for part in parts):
+                return
+            identifier = "".join(self._get_run_text(part[0]) for part in parts)
+        else:
+            return
+        if not identifier.isalnum():
+            return
+        # One or two glyphs need half an em per side. Three glyphs with
+        # scripts already occupy more width, so a thin space suffices.
+        if len(identifier) <= 2:
+            space = "\u2002"
+        elif kind != "r" and len(identifier) == 3:
+            space = "\u2009"
+        else:
+            return
+        margin = OxmlElement("m:r")
+        text = OxmlElement("m:t")
+        text.text = space
+        margin.append(text)
+        base.insert(0, margin)
+        base.append(deepcopy(margin))
 
     def _preserve_omml_text_spaces(self, omath: etree._Element) -> None:
         for text_node in omath.xpath(".//*[local-name()='t']"):
