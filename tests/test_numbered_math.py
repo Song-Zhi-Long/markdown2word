@@ -84,6 +84,10 @@ class NumberedMathTests(unittest.TestCase):
         self.assertEqual(document.element.xpath('.//m:nary'), [])
         self.assertEqual(len(document.element.xpath('.//m:sSubSup')), 1)
 
+    def test_inline_sum_with_only_an_upper_limit(self):
+        document = self.export(r'$\sum^n x$')
+        self.assertTrue(document.element.xpath('.//m:sSup[m:e/m:r/m:t="∑"]/m:sup/m:r[m:t="n"]'))
+
     def test_explicit_nolimits_is_preserved(self):
         document = self.export(r'$$\sum\nolimits_{i=1}^n i\tag{1}$$')
         display = self.assert_display_number(document, '(1)')

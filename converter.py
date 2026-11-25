@@ -700,8 +700,10 @@ class MarkdownToDocxConverter:
             if parent is None:
                 continue
 
-            sub_node = self._first_child_by_local_name(nary, "sub")
-            sup_node = self._first_child_by_local_name(nary, "sup")
+            # The XSL emits both slots and marks absent limits as hidden.
+            # A side-script in Word has no hide flag, so omit those slots.
+            sub_node = self._visible_nary_limit(nary, "sub")
+            sup_node = self._visible_nary_limit(nary, "sup")
             e_node = self._first_child_by_local_name(nary, "e")
             if sub_node is None and sup_node is None:
                 continue
@@ -782,6 +784,12 @@ class MarkdownToDocxConverter:
             if self._tag_name(child) == local_name:
                 return child
         return None
+
+    def _visible_nary_limit(self, nary: etree._Element, limit: str) -> Optional[etree._Element]:
+        hidden = nary.find(qn("m:naryPr") + "/" + qn(f"m:{limit}Hide"))
+        if hidden is not None and hidden.get(qn("m:val"), "on") in {"on", "1", "true"}:
+            return None
+        return nary.find(qn(f"m:{limit}"))
 
     def _build_inline_nary_script(
         self,
@@ -1555,7 +1563,7 @@ class MarkdownToDocxConverter:
             if display:
                 latex = self._strip_blockquote_markers(latex)
             if delimiter_slashes > 1:
-                latex = self._unescape_math_body(latex, delimiter_slashes)
+                latex = self._unescape_math_body(latex, delimiter_slashes, display)
             self._math_tokens[token] = {"latex": latex.strip(), "display": display}
             if display:
                 return f"\n\n{token}\n\n"
@@ -1588,7 +1596,7 @@ class MarkdownToDocxConverter:
         text = re.sub(r"(?<!\\)\$(?!\$)([^\n]+?)(?<!\\)\$", lambda m: create_token(m.group(1), False), text)
         return text
 
-    def _unescape_math_body(self, latex: str, delimiter_slashes: int = 2) -> str:
+    def _unescape_math_body(self, latex: str, delimiter_slashes: int, display: bool) -> str:
         # Escaped delimiters may wrap native, fully escaped, or mixed LaTeX.
         # Native environments must keep their two-backslash row separators.
         environment = re.search(r"(?<!\\)(\\{2,})begin\{", latex)
@@ -1620,7 +1628,17 @@ class MarkdownToDocxConverter:
 
             latex = re.sub(r"\\{2,}", unescape, latex)
 
+        bare_inline_norms = not display and r"\begin{" not in latex
+
         def restore_delimiter_escapes(segment: str) -> str:
+            if bare_inline_norms:
+                # Outside row-based environments, copied inline norms can
+                # have paired escaped bars even without \left and \right.
+                segment = re.sub(
+                    r"(?<!\\)\\{2,}\|([^|\n]+?)(?<!\\)\\{2,}\|",
+                    lambda match: r"\|" + match[1] + r"\|",
+                    segment,
+                )
             # Decode copied \left\\| / \right\\| only in delimiter context.
             # A matrix row break followed by a plain | must remain unchanged.
             return re.sub(

@@ -63,6 +63,26 @@ class NormDelimiterTests(unittest.TestCase):
                 self.assertEqual(self.extract(opening + BODY + closing), BODY)
                 self.assert_norm(self.converter.latex_to_omml(BODY, opening not in ('$', r'\(')))
 
+    def test_copied_inline_offset_loss_has_only_lower_limit_and_two_double_bars(self):
+        source = r'\\(L\_{offset}=\sum_p\\|\hat{\delta}\_p-\delta_p^{GT}\\|\_1\\)'
+        with tempfile.TemporaryDirectory() as output_dir:
+            document = Document(self.converter.convert(source, AppConfig(output_dir, str(Path.cwd()))))
+        self.assertEqual(self.converter.last_warnings, [])
+        self.assertFalse(document.element.xpath('.//m:oMathPara'))
+        lower = document.element.xpath('.//m:sSub[m:e/m:r/m:t="∑"]/m:sub/m:r/m:t')
+        self.assertEqual([node.text for node in lower], ['p'])
+        texts = document.element.xpath('.//m:oMath//m:t/text()')
+        self.assertEqual(''.join(texts).count('‖'), 2)
+        self.assertNotIn('|', ''.join(texts))
+        self.assertTrue(document.element.xpath('.//m:sSub[m:e/m:r/m:t="‖"]/m:sub/m:r[m:t="1"]'))
+        self.assertTrue(document.element.xpath('.//m:sSubSup/m:sup/m:r[m:t="GT"]'))
+
+    def test_copied_inline_bars_preserve_matrix_rows_and_literal_text(self):
+        body = r'\begin{bmatrix}a\\|x|\\|y|\end{bmatrix}'
+        self.assertEqual(self.extract(r'\\(' + body + r'\\)'), body)
+        literal = r'\text{literal \\|a\\|}'
+        self.assertEqual(self.extract(r'\\(' + literal + r'\\)'), literal)
+
     def test_matrix_row_break_before_plain_bar_is_not_collapsed(self):
         body = r'\begin{bmatrix}a\\|x|\end{bmatrix}'
         self.assertEqual(self.extract(r'\\[' + body + r'\\]'), body)
