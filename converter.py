@@ -611,6 +611,7 @@ class MarkdownToDocxConverter:
             self._tune_nary_style(math_node)
             self._convert_omml_accents(math_node)
             self._convert_omml_braces_to_group_chars(math_node)
+            self._stack_display_fraction_limits(math_node)
             self._preserve_omml_text_spaces(math_node)
 
     def _convert_omml_accents(self, omath: etree._Element) -> None:
@@ -736,6 +737,37 @@ class MarkdownToDocxConverter:
             grow_nodes = nary.xpath("./*[local-name()='naryPr']/*[local-name()='grow']")
             for grow in grow_nodes:
                 grow.set(qn("m:val"), "0")
+
+    def _stack_display_fraction_limits(self, omath: etree._Element) -> None:
+        # Word places n-ary limits at the side in fractions even with undOvr.
+        # Use native lower/upper limit objects for explicit display-style limits.
+        for properties in omath.xpath(".//*[local-name()='naryPr'][@display-fraction]"):
+            del properties.attrib["display-fraction"]
+            location = properties.find(qn("m:limLoc"))
+            if location is None or location.get(qn("m:val")) != "undOvr":
+                continue
+            nary = properties.getparent()
+            operand = nary.find(qn("m:e"))
+            run = OxmlElement("m:r")
+            self._set_run_text(run, self._nary_symbol(nary))
+            operator = run
+            for limit, tag in (("sub", "m:limLow"), ("sup", "m:limUpp")):
+                argument = self._visible_nary_limit(nary, limit)
+                if argument is None:
+                    continue
+                base = OxmlElement("m:e")
+                base.append(operator)
+                argument.tag = qn("m:lim")
+                operator = OxmlElement(tag)
+                operator.extend([base, argument])
+
+            box = OxmlElement("m:box")
+            expression = OxmlElement("m:e")
+            expression.append(operator)
+            if operand is not None:
+                expression.extend(child for child in list(operand) if self._tag_name(child) != "argpr")
+            box.append(expression)
+            nary.getparent().replace(nary, box)
 
     def _convert_inline_nary_to_scripts(self, omath: etree._Element) -> None:
         nary_symbols = {"∑", "∏", "∐", "⋃", "⋂", "⨁", "⨂", "∨", "∧", "⨆"}
@@ -896,7 +928,8 @@ class MarkdownToDocxConverter:
             if not e_nodes:
                 continue
             e_node = e_nodes[0]
-            if len(e_node) != 0:
+            # A style declaration can leave argument properties without a summand.
+            if any(self._tag_name(node) != "argpr" for node in e_node):
                 continue
             if idx + 1 >= len(children):
                 continue

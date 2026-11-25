@@ -3748,6 +3748,13 @@
       </xsl:choose>
     </xsl:param>
     <m:naryPr>
+      <!-- The converter consumes this marker before writing the Word math. -->
+      <xsl:if test="ancestor::mml:math[@display='block'] and ancestor::mml:mfrac
+                    and ancestor::mml:mstyle[@displaystyle][1]/@displaystyle='true'
+                    and generate-id(ancestor::mml:mstyle[@displaystyle][1]/ancestor::mml:mfrac[1])
+                        = generate-id(ancestor::mml:mfrac[1])">
+        <xsl:attribute name="display-fraction">1</xsl:attribute>
+      </xsl:if>
       <m:chr>
         <xsl:attribute name="m:val">
           <xsl:value-of select="$chr" />

@@ -78,6 +78,28 @@ class NumberedMathTests(unittest.TestCase):
         self.assertEqual(len(document.element.xpath('.//m:oMathPara')), 1)
         self.assertEqual(document.element.xpath('.//m:eqArr'), [])
 
+    def test_displaystyle_fraction_contains_both_summands_and_stacked_limits(self):
+        source = (Path(__file__).parent / 'fixtures/weighted_depth_vote_escaped.md').read_text(encoding='utf-8')
+        doc = self.export(source)
+        fraction, = doc.element.xpath('.//m:oMathPara/m:oMath/m:f')
+        for side, numerator in (('num', 'zpredi'), ('den', '1')):
+            expression, = xpath(fraction, f'./m:{side}/m:box/m:e')
+            self.assertEqual(
+                xpath(expression, './m:limUpp/m:e/m:limLow/m:e/m:r/m:t/text()'), ['∑']
+            )
+            self.assertEqual(xpath(expression, './m:limUpp/m:lim//m:t/text()'), ['7'])
+            self.assertEqual(xpath(expression, './m:limUpp/m:e/m:limLow/m:lim//m:t/text()'), ['i=1'])
+            self.assertEqual(''.join(xpath(expression, './m:f/m:num//m:t/text()')), numerator)
+            self.assertEqual(''.join(xpath(expression, './m:f/m:den//m:t/text()')), 'σi')
+        self.assertFalse(xpath(fraction, './/m:nary|.//*[@display-fraction]'))
+
+    def test_fraction_summand_repair_respects_explicit_nolimits(self):
+        doc = self.export(r'$$\frac{\displaystyle\sum\nolimits_{i=1}^n x_i}{y}$$')
+        nary, = doc.element.xpath('.//m:nary')
+        self.assertEqual(xpath(nary, './m:naryPr/m:limLoc')[0].get(qn('m:val')), 'subSup')
+        self.assertEqual(''.join(xpath(nary, './m:e//m:t/text()')), 'xi')
+        self.assertFalse(xpath(nary, './/*[@display-fraction]'))
+
     def test_inline_sum_keeps_side_scripts(self):
         document = self.export(r'行内 $\sum_{i=1}^n i$ 继续正文。')
         self.assertEqual(document.element.xpath('.//m:oMathPara'), [])
