@@ -108,3 +108,30 @@ class ImageLinkTests(unittest.TestCase):
         self.assertEqual(len(doc.inline_shapes), 1)
         link, = doc.element.xpath('.//w:hyperlink')
         self.assertEqual(doc.part.rels[link.get(qn('r:id'))].target_ref, page_url)
+
+    def test_consecutive_images_form_rows_and_mosaics_without_crossing_text(self):
+        photos = []
+        for index, size in enumerate(((600, 540), (610, 550), (630, 520), (600, 520), (880, 400), (710, 520))):
+            name = f'photo{index}.png'
+            Image.new('RGB', size, (index * 30, 0, 0)).save(self.root / name)
+            photos.append(f'[photo{index}]({name})')
+        doc = self.convert('\n\n'.join(photos[:3] + ['Between groups'] + photos[3:]))
+        row, mosaic = doc.tables
+        for table, count in ((row, 3), (mosaic, 2)):
+            self.assertEqual(len(table.rows), 1)
+            self.assertEqual(len(table.columns), count)
+            self.assertFalse(table.autofit)
+        self.assertEqual([len(cell._tc.xpath('.//wp:inline')) for cell in row.rows[0].cells], [1, 1, 1])
+        self.assertEqual([len(cell._tc.xpath('.//wp:inline')) for cell in mosaic.rows[0].cells], [1, 2])
+        self.assertEqual([paragraph.text for paragraph in doc.paragraphs], ['Between groups'])
+        self.assertEqual(len(doc.inline_shapes), 6)
+        self.assertAlmostEqual(doc.inline_shapes[3].width / doc.inline_shapes[3].height, 600 / 520, places=4)
+
+    def test_four_explicit_images_form_two_rows_and_caption_separates_single_image(self):
+        for index in range(5):
+            Image.new('RGB', (640, 480)).save(self.root / f'{index}.png')
+        images = '\n'.join(f'![photo]({index}.png)' for index in range(4))
+        doc = self.convert(images + '\n\nFigure 1: A caption\n\n![single](4.png)')
+        self.assertEqual([len(table.columns) for table in doc.tables], [2, 2])
+        self.assertEqual(len(doc.paragraphs[-1]._p.xpath('.//wp:inline')), 1)
+        self.assertEqual(len(doc.inline_shapes), 5)

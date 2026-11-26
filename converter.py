@@ -8,6 +8,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.error import HTTPError
@@ -46,6 +47,7 @@ IMAGE_SUFFIXES_BY_MEDIA_TYPE = {
     "image/svg+xml": ".svg",
 }
 IMAGE_LINK_SUFFIXES = {".jpeg", ".tif", *IMAGE_SUFFIXES_BY_MEDIA_TYPE.values()}
+GALLERY_GAP_INCHES = 4 / 72
 MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 MATHML_TAG = f"{{{MATHML_NS}}}"
 SCRIPT_MATH_CHARS = {
@@ -152,6 +154,13 @@ class TextStyle:
         )
 
 
+@dataclass(frozen=True)
+class GalleryImage:
+    path: Path
+    aspect_ratio: float
+    natural_width: float
+
+
 class MarkdownToDocxConverter:
     def __init__(self, xsl_path: Optional[str] = None) -> None:
         root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -194,8 +203,7 @@ class MarkdownToDocxConverter:
         root = lxml_html.fragment_fromstring(html_text, create_parent="div")
         with tempfile.TemporaryDirectory(prefix="markdown2word-images-") as image_dir:
             self._promote_image_links(root, config.asset_root, image_dir)
-            for child in root:
-                self._render_block(child, document, config)
+            self._render_document_blocks(root, document, config, image_dir)
 
         output_filename = self._build_output_filename(markdown_text, config, output_filename)
         output_path = self._build_available_output_path(output_dir, output_filename)
@@ -1820,6 +1828,28 @@ class MarkdownToDocxConverter:
 
         return "\n".join(result)
 
+    def _render_document_blocks(
+        self, root: etree._Element, document: _DocumentType, config: AppConfig, image_dir: str
+    ) -> None:
+        for image_only, run in groupby(root, key=lambda node: bool(self._gallery_nodes(node))):
+            blocks = list(run)
+            if image_only:
+                nodes = [image for block in blocks for image in self._gallery_nodes(block)]
+                if len(nodes) > 1 and self._render_image_gallery(nodes, document, config, image_dir):
+                    continue
+            for block in blocks:
+                self._render_block(block, document, config)
+
+    def _gallery_nodes(self, node: etree._Element) -> List[etree._Element]:
+        tag = self._tag_name(node)
+        if tag == "img":
+            return [] if node.get("width") else [node]
+        if tag != "p" or node.text_content().strip():
+            return []
+        if any(self._tag_name(child) not in {"img", "br"} or child.get("width") for child in node):
+            return []
+        return [child for child in node if self._tag_name(child) == "img"]
+
     def _render_block(self, node: etree._Element, container, config: AppConfig) -> None:
         tag = self._tag_name(node)
         if not tag:
@@ -2667,6 +2697,101 @@ class MarkdownToDocxConverter:
         except Exception:
             # A link can still be useful if the resource cannot be embedded.
             return None
+
+    def _render_image_gallery(
+        self, nodes: List[etree._Element], document: _DocumentType, config: AppConfig, image_dir: str
+    ) -> bool:
+        pictures = []
+        paths: Dict[str, Optional[Path]] = {}
+        for node in nodes:
+            src = node.get("src", "").strip()
+            if not src:
+                return False
+            if src not in paths:
+                paths[src] = self._prepare_image_link(src, config.asset_root, image_dir)
+            path = paths[src]
+            if path is None:
+                return False
+            try:
+                with Image.open(path) as image:
+                    if max(image.size) < 128:
+                        return False
+                    ratio = image.width / image.height
+            except (OSError, ValueError):
+                return False
+            width = self._natural_or_max_width(path, self._page_content_width_inches())
+            pictures.append(GalleryImage(path, ratio, width))
+
+        offset = 0
+        while offset < len(pictures):
+            remaining = len(pictures) - offset
+            # Prefer three across without leaving a lone image on the last row.
+            count = 2 if remaining == 4 else min(3, remaining)
+            columns = self._gallery_columns(pictures[offset : offset + count], document)
+            if offset:
+                gap = document.add_paragraph().paragraph_format
+                gap.space_before = gap.space_after = Pt(0)
+                gap.line_spacing = Inches(GALLERY_GAP_INCHES)
+            self._add_gallery_table(document, columns)
+            offset += count
+        return True
+
+    def _gallery_columns(
+        self, pictures: List[GalleryImage], document: _DocumentType
+    ) -> List[List[Tuple[GalleryImage, float, float]]]:
+        gap = GALLERY_GAP_INCHES
+        page_width = self._page_content_width_inches()
+        section = document.sections[0]
+        max_height = (section.page_height - section.top_margin - section.bottom_margin) / 914400 * 0.8
+        ratios = [picture.aspect_ratio for picture in pictures]
+        if len(pictures) == 3 and ratios[0] <= 1.35 and min(ratios[1:]) >= 1.15 * ratios[0]:
+            # The two right images have equal widths. Their heights plus the
+            # vertical gap should match the first image's full height.
+            stack_ratio = 1 / (1 / ratios[1] + 1 / ratios[2])
+            height = min(
+                (page_width - 2 * gap + gap * stack_ratio) / (ratios[0] + stack_ratio),
+                max_height,
+                pictures[0].natural_width / ratios[0],
+                min(pictures[1].natural_width, pictures[2].natural_width) / stack_ratio + gap,
+            )
+            if height > 2 * gap:
+                right_width = (height - gap) * stack_ratio
+                return [
+                    [(pictures[0], height * ratios[0], height)],
+                    [(picture, right_width, right_width / picture.aspect_ratio) for picture in pictures[1:]],
+                ]
+
+        height = min(
+            (page_width - gap * len(pictures)) / sum(ratios),
+            max_height,
+            min(picture.natural_width / picture.aspect_ratio for picture in pictures),
+        )
+        return [[(picture, height * picture.aspect_ratio, height)] for picture in pictures]
+
+    def _add_gallery_table(self, document, columns) -> None:
+        table = document.add_table(rows=1, cols=len(columns))
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+        row = table.rows[0]
+        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
+        margins = OxmlElement("w:tblCellMar")
+        for side in ("top", "left", "bottom", "right"):
+            margin = OxmlElement(f"w:{side}")
+            margin.set(qn("w:w"), "0")
+            margin.set(qn("w:type"), "dxa")
+            margins.append(margin)
+        table._tbl.tblPr.append(margins)
+
+        for column, cell, images in zip(table.columns, row.cells, columns):
+            column.width = cell.width = Inches(images[0][1] + GALLERY_GAP_INCHES)
+            for index, (picture, width, height) in enumerate(images):
+                paragraph = cell.add_paragraph() if index else cell.paragraphs[0]
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                fmt = paragraph.paragraph_format
+                fmt.first_line_indent = fmt.space_after = Pt(0)
+                fmt.space_before = Inches(GALLERY_GAP_INCHES) if index else Pt(0)
+                fmt.line_spacing = 1.0
+                paragraph.add_run().add_picture(str(picture.path), width=Inches(width), height=Inches(height))
 
     def _insert_image(self, paragraph, image_node: etree._Element, config: AppConfig) -> None:
         src = image_node.get("src", "").strip()
