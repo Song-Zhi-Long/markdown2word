@@ -135,3 +135,41 @@ class ImageLinkTests(unittest.TestCase):
         self.assertEqual([len(table.columns) for table in doc.tables], [2, 2])
         self.assertEqual(len(doc.paragraphs[-1]._p.xpath('.//wp:inline')), 1)
         self.assertEqual(len(doc.inline_shapes), 5)
+
+    def test_paper_card_keeps_thumbnail_title_metadata_and_link_together(self):
+        Image.new('RGB', (400, 640)).save(self.root / 'paper.png')
+        doc = self.convert(
+            '## Section\n\n[cover](paper.png)\n\n**Paper title**\n\n'
+            '- 作者：Example Author\n- 会议：ICCV 2021\n- [论文链接](#paper)\n\nPaper summary.'
+        )
+        table, = doc.tables
+        preview, details = table.rows[0].cells
+        self.assertEqual(len(preview._tc.xpath('.//wp:inline')), 1)
+        self.assertEqual([p.text for p in details.paragraphs][:3],
+                         ['Paper title', '• \t作者：Example Author', '• \t会议：ICCV 2021'])
+        link, = details._tc.xpath('.//w:hyperlink')
+        self.assertEqual(doc.part.rels[link.get(qn('r:id'))].target_ref, '#paper')
+        self.assertEqual(doc.paragraphs[-1].text, 'Paper summary.')
+
+    def test_generic_image_and_bold_heading_with_list_stay_as_separate_blocks(self):
+        (self.root / 'diagram.png').write_bytes(self.png)
+        doc = self.convert('![diagram](diagram.png)\n\n**Parts of the diagram**\n\n- Front\n- Back')
+        self.assertFalse(doc.tables)
+        self.assertEqual(len(doc.inline_shapes), 1)
+        self.assertEqual(doc.paragraphs[1].text, 'Parts of the diagram')
+
+    def test_favicons_and_adjacent_source_lines_are_removed_before_requests(self):
+        source = (
+            r'[image](https://www.google.com/s2/favicons?domain=https://doi.org\&sz=32)'
+            '\n\nDOI+2\n\n'
+            '[image](https://www.google.com/s2/favicons?domain=https://openaccess.thecvf.com&sz=32)'
+            '\n开放访问计算机视觉基金会+3\nKeep this sentence.\n\n'
+            '![icon](https://example.test/favicon-32x32.png)  \nCVlibs+1\n\n'
+            '[image](https://example.test/favicon.ico)\n\nActual paragraph.\n\nElsewhere+1'
+        )
+        with patch('converter.urllib.request.urlopen') as opened:
+            doc = self.convert(source)
+        opened.assert_not_called()
+        self.assertFalse(doc.inline_shapes)
+        self.assertEqual([p.text for p in doc.paragraphs],
+                         ['Keep this sentence.', 'Actual paragraph.', 'Elsewhere+1'])

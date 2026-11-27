@@ -8,7 +8,6 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
-from itertools import groupby
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.error import HTTPError
@@ -202,6 +201,7 @@ class MarkdownToDocxConverter:
 
         root = lxml_html.fragment_fromstring(html_text, create_parent="div")
         with tempfile.TemporaryDirectory(prefix="markdown2word-images-") as image_dir:
+            self._remove_website_icons(root)
             self._promote_image_links(root, config.asset_root, image_dir)
             self._render_document_blocks(root, document, config, image_dir)
 
@@ -1831,14 +1831,57 @@ class MarkdownToDocxConverter:
     def _render_document_blocks(
         self, root: etree._Element, document: _DocumentType, config: AppConfig, image_dir: str
     ) -> None:
-        for image_only, run in groupby(root, key=lambda node: bool(self._gallery_nodes(node))):
-            blocks = list(run)
-            if image_only:
-                nodes = [image for block in blocks for image in self._gallery_nodes(block)]
-                if len(nodes) > 1 and self._render_image_gallery(nodes, document, config, image_dir):
-                    continue
-            for block in blocks:
+        blocks = list(root)
+        index = 0
+        while index < len(blocks):
+            block = blocks[index]
+            images = self._gallery_nodes(block)
+            if not images:
                 self._render_block(block, document, config)
+                index += 1
+                continue
+
+            paper = self._paper_card_parts(block)
+            if paper is not None and self._render_paper_card(images[0], *paper, document, config, image_dir):
+                index += 3
+                continue
+
+            end = index + 1
+            for sibling in blocks[end:]:
+                next_images = self._gallery_nodes(sibling)
+                if not next_images or self._paper_card_parts(sibling) is not None:
+                    break
+                images.extend(next_images)
+                end += 1
+            if len(images) == 1 or not self._render_image_gallery(images, document, config, image_dir):
+                for standalone in blocks[index:end]:
+                    self._render_block(standalone, document, config)
+            index = end
+
+    def _paper_card_parts(self, block: etree._Element) -> Optional[Tuple[etree._Element, etree._Element]]:
+        if len(self._gallery_nodes(block)) != 1:
+            return None
+        title = block.getnext()
+        if title is None or self._tag_name(title) != "p" or len(title) != 1:
+            return None
+        strong = title[0]
+        if (self._tag_name(strong) not in {"strong", "b"} or not strong.text_content().strip()
+                or (title.text or "").strip() or (strong.tail or "").strip()):
+            return None
+        metadata = title.getnext()
+        if metadata is None or self._tag_name(metadata) != "ul":
+            return None
+        labels = {
+            match[1].casefold()
+            for item in metadata.findall("li")
+            if (match := re.match(
+                r"\s*(作者|会议|期刊|年份|authors?|venue|conference|journal|year)\s*[:：]", item.text_content(),
+                flags=re.IGNORECASE,
+            ))
+        }
+        paper_link = any("论文" in a.text_content() or re.search(r"\bpaper\b", a.text_content(), re.I)
+                         for a in metadata.xpath("./li//a[@href]"))
+        return (title, metadata) if len(labels) >= 2 or (labels and paper_link) else None
 
     def _gallery_nodes(self, node: etree._Element) -> List[etree._Element]:
         tag = self._tag_name(node)
@@ -2658,6 +2701,63 @@ class MarkdownToDocxConverter:
             para_pr.append(jc)
         jc.set(qn("m:val"), justification)
 
+    def _remove_website_icons(self, root: etree._Element) -> None:
+        for node in root.xpath(".//a[@href]|.//img[@src]"):
+            if not any(ancestor is root for ancestor in node.iterancestors()):
+                continue
+            url = node.get("href") if self._tag_name(node) == "a" else node.get("src")
+            if not self._is_website_icon(url):
+                continue
+            parent = node.getparent()
+            # Some copies wrap the icon in a link to the website.
+            if (self._tag_name(parent) == "a" and len(parent) == 1 and not parent.text_content().strip()):
+                node, parent = parent, parent.getparent()
+            if (self._tag_name(parent) == "p" and len(parent) == 2 and parent[0] is node
+                    and self._tag_name(parent[1]) == "br" and not (node.tail or "").strip()
+                    and not (parent.text or "").strip()):
+                line = parent[1].tail or ""
+                if self._strip_source_count_line(line) != line:
+                    node.tail = line
+                    parent.remove(parent[1])
+            if self._tag_name(parent) == "p" and len(parent) == 1 and not (parent.text or "").strip():
+                if (node.tail or "").strip():
+                    node.tail = self._strip_source_count_line(node.tail)
+                else:
+                    source = parent.getnext()
+                    if source is not None and self._tag_name(source) == "p" and len(source) == 0:
+                        source.text = self._strip_source_count_line(source.text or "")
+                        if not source.text.strip():
+                            source.drop_tree()
+                node.drop_tree()
+                if not (parent.text or "").strip():
+                    parent.drop_tree()
+            else:
+                node.drop_tree()
+
+    def _is_website_icon(self, url: str) -> bool:
+        try:
+            parsed = urllib.parse.urlsplit(url.strip())
+        except ValueError:
+            return False
+        if parsed.scheme not in {"https", "http"}:
+            return False
+        path = urllib.parse.unquote(parsed.path).lower().rstrip("/")
+        host = parsed.hostname or ""
+        if host in {"google.com", "www.google.com"} and path == "/s2/favicons":
+            return True
+        if host.endswith(".gstatic.com") and path == "/faviconv2":
+            return True
+        return bool(re.fullmatch(
+            r"(?:favicon|apple-touch-icon)(?:[-_.][\w.-]+)?\.(?:ico|png|svg|gif|jpe?g|webp)",
+            path.rsplit("/", 1)[-1],
+        ))
+
+    def _strip_source_count_line(self, text: str) -> str:
+        line, _, rest = text.lstrip().partition("\n")
+        if re.fullmatch(r"[\w][\w .·()（）&–-]{0,99}\s*\+\s*\d+\s*", line):
+            return rest
+        return text
+
     def _promote_image_links(self, root: etree._Element, asset_root: str, image_dir: str) -> None:
         anchors_by_href: Dict[str, List[etree._Element]] = {}
         for anchor in root.xpath(".//a[@href and not(.//img)]"):
@@ -2736,6 +2836,40 @@ class MarkdownToDocxConverter:
             offset += count
         return True
 
+    def _render_paper_card(
+        self, image: etree._Element, title: etree._Element, metadata: etree._Element,
+        document: _DocumentType, config: AppConfig, image_dir: str,
+    ) -> bool:
+        path = self._prepare_image_link((image.get("src") or "").strip(), config.asset_root, image_dir)
+        if path is None:
+            return False
+        try:
+            with Image.open(path) as thumbnail:
+                ratio = thumbnail.width / thumbnail.height
+        except (OSError, ValueError):
+            return False
+        page_width = self._page_content_width_inches()
+        thumbnail_width = min(1.18, page_width * 0.20, 1.75 * ratio)
+        gap = 0.16
+        widths = [thumbnail_width + gap, page_width - thumbnail_width - gap]
+        left, right = self._add_picture_table(document, widths)
+        preview = left.paragraphs[0]
+        preview.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        preview.add_run().add_picture(str(path), width=Inches(thumbnail_width), height=Inches(thumbnail_width / ratio))
+        heading = right.paragraphs[0]
+        self._render_inline_node(title, heading, right, config, TextStyle(size_pt=BODY_SIZE_PT))
+        self._render_list(metadata, right, config, ordered=False, level=1)
+        for cell in (left, right):
+            paragraphs = cell.paragraphs
+            for index, paragraph in enumerate(paragraphs):
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                fmt = paragraph.paragraph_format
+                fmt.space_before = Pt(3 if index == 0 else 0)
+                fmt.space_after = Pt(4 if index == len(paragraphs) - 1 else 2)
+                fmt.line_spacing = 1.12
+            paragraphs[0].paragraph_format.first_line_indent = Pt(0)
+        return True
+
     def _gallery_columns(
         self, pictures: List[GalleryImage], document: _DocumentType
     ) -> List[List[Tuple[GalleryImage, float, float]]]:
@@ -2769,7 +2903,19 @@ class MarkdownToDocxConverter:
         return [[(picture, height * picture.aspect_ratio, height)] for picture in pictures]
 
     def _add_gallery_table(self, document, columns) -> None:
-        table = document.add_table(rows=1, cols=len(columns))
+        cells = self._add_picture_table(document, [images[0][1] + GALLERY_GAP_INCHES for images in columns])
+        for cell, images in zip(cells, columns):
+            for index, (picture, width, height) in enumerate(images):
+                paragraph = cell.add_paragraph() if index else cell.paragraphs[0]
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                fmt = paragraph.paragraph_format
+                fmt.first_line_indent = fmt.space_after = Pt(0)
+                fmt.space_before = Inches(GALLERY_GAP_INCHES) if index else Pt(0)
+                fmt.line_spacing = 1.0
+                paragraph.add_run().add_picture(str(picture.path), width=Inches(width), height=Inches(height))
+
+    def _add_picture_table(self, document: _DocumentType, widths: List[float]):
+        table = document.add_table(rows=1, cols=len(widths))
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = False
         row = table.rows[0]
@@ -2782,16 +2928,9 @@ class MarkdownToDocxConverter:
             margins.append(margin)
         table._tbl.tblPr.append(margins)
 
-        for column, cell, images in zip(table.columns, row.cells, columns):
-            column.width = cell.width = Inches(images[0][1] + GALLERY_GAP_INCHES)
-            for index, (picture, width, height) in enumerate(images):
-                paragraph = cell.add_paragraph() if index else cell.paragraphs[0]
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                fmt = paragraph.paragraph_format
-                fmt.first_line_indent = fmt.space_after = Pt(0)
-                fmt.space_before = Inches(GALLERY_GAP_INCHES) if index else Pt(0)
-                fmt.line_spacing = 1.0
-                paragraph.add_run().add_picture(str(picture.path), width=Inches(width), height=Inches(height))
+        for column, cell, width in zip(table.columns, row.cells, widths):
+            column.width = cell.width = Inches(width)
+        return row.cells
 
     def _insert_image(self, paragraph, image_node: etree._Element, config: AppConfig) -> None:
         src = image_node.get("src", "").strip()
