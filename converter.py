@@ -1846,6 +1846,18 @@ class MarkdownToDocxConverter:
                 index += 3
                 continue
 
+            spans = self._illustrated_card_spans(blocks, index)
+            if spans:
+                thumbnails = [
+                    self._load_card_thumbnail(self._gallery_nodes(blocks[start])[0], config, image_dir)
+                    for start, _ in spans
+                ]
+                if all(thumbnails):
+                    for (start, end), thumbnail in zip(spans, thumbnails):
+                        self._render_thumbnail_card(thumbnail, blocks[start + 1], blocks[start + 2:end], document, config)
+                    index = spans[-1][1]
+                    continue
+
             end = index + 1
             for sibling in blocks[end:]:
                 next_images = self._gallery_nodes(sibling)
@@ -1862,11 +1874,7 @@ class MarkdownToDocxConverter:
         if len(self._gallery_nodes(block)) != 1:
             return None
         title = block.getnext()
-        if title is None or self._tag_name(title) != "p" or len(title) != 1:
-            return None
-        strong = title[0]
-        if (self._tag_name(strong) not in {"strong", "b"} or not strong.text_content().strip()
-                or (title.text or "").strip() or (strong.tail or "").strip()):
+        if not self._standalone_bold_text(title):
             return None
         metadata = title.getnext()
         if metadata is None or self._tag_name(metadata) != "ul":
@@ -1882,6 +1890,76 @@ class MarkdownToDocxConverter:
         paper_link = any("论文" in a.text_content() or re.search(r"\bpaper\b", a.text_content(), re.I)
                          for a in metadata.xpath("./li//a[@href]"))
         return (title, metadata) if len(labels) >= 2 or (labels and paper_link) else None
+
+    def _standalone_bold_text(self, node: Optional[etree._Element]) -> str:
+        if node is None or self._tag_name(node) != "p" or len(node) != 1:
+            return ""
+        strong = node[0]
+        if (self._tag_name(strong) not in {"strong", "b"} or (node.text or "").strip()
+                or (strong.tail or "").strip()):
+            return ""
+        return strong.text_content().strip()
+
+    def _illustrated_card_title(self, image_block: etree._Element) -> Optional[re.Match[str]]:
+        if len(self._gallery_nodes(image_block)) != 1:
+            return None
+        return re.fullmatch(
+            r"([A-Z]|\d+)[.．、]\s+(.+)", self._standalone_bold_text(image_block.getnext())
+        )
+
+    def _illustrated_card_spans(self, blocks: List[etree._Element], first: int) -> List[Tuple[int, int]]:
+        title = self._illustrated_card_title(blocks[first])
+        if title is None:
+            return []
+        start = first
+        spans: List[Tuple[int, int]] = []
+        topics = [title[2]]
+        for index in range(first + 2, len(blocks)):
+            block = blocks[index]
+            next_title = self._illustrated_card_title(block)
+            if next_title is not None and self._consecutive_card_labels(title[1], next_title[1]):
+                if index <= start + 2:
+                    return []
+                spans.append((start, index))
+                start, title = index, next_title
+                topics.append(title[2])
+                continue
+            if self._is_card_summary_intro(block):
+                if not self._compares_card_topics(block.getnext(), topics):
+                    return []
+                break
+            if self._tag_name(block) not in {"p", "ul", "ol"} or block.xpath(".//img"):
+                break
+        else:
+            # The last card needs a boundary before ordinary closing prose.
+            return []
+        return [*spans, (start, index)] if spans and index > start + 2 else []
+
+    def _consecutive_card_labels(self, left: str, right: str) -> bool:
+        if left.isdigit() and right.isdigit():
+            return int(right) == int(left) + 1
+        return left.isalpha() and right.isalpha() and ord(right) == ord(left) + 1
+
+    def _is_card_summary_intro(self, node: etree._Element) -> bool:
+        if self._tag_name(node) != "p":
+            return False
+        return bool(re.match(
+            r"(?:这|上述|以上).{0,40}(?:区别|对比|比较|总结|小结)|(?:comparison|summary)\b",
+            node.text_content().strip(), flags=re.IGNORECASE,
+        ))
+
+    def _compares_card_topics(self, node: Optional[etree._Element], topics: List[str]) -> bool:
+        if node is None or self._tag_name(node) not in {"ul", "ol"}:
+            return False
+        labels = {
+            match[1].strip().casefold()
+            for item in node.findall("li")
+            if (match := re.match(r"\s*([^:：\n]{1,40})[:：]", item.text_content()))
+        }
+        return sum(
+            any(re.match(re.escape(label) + r"(?=$|\s|[（(])", topic.casefold()) for label in labels if label)
+            for topic in topics
+        ) >= 2
 
     def _gallery_nodes(self, node: etree._Element) -> List[etree._Element]:
         tag = self._tag_name(node)
@@ -2840,14 +2918,29 @@ class MarkdownToDocxConverter:
         self, image: etree._Element, title: etree._Element, metadata: etree._Element,
         document: _DocumentType, config: AppConfig, image_dir: str,
     ) -> bool:
+        thumbnail = self._load_card_thumbnail(image, config, image_dir)
+        if thumbnail is None:
+            return False
+        self._render_thumbnail_card(thumbnail, title, [metadata], document, config)
+        return True
+
+    def _load_card_thumbnail(
+        self, image: etree._Element, config: AppConfig, image_dir: str
+    ) -> Optional[Tuple[Path, float]]:
         path = self._prepare_image_link((image.get("src") or "").strip(), config.asset_root, image_dir)
         if path is None:
-            return False
+            return None
         try:
             with Image.open(path) as thumbnail:
-                ratio = thumbnail.width / thumbnail.height
+                return path, thumbnail.width / thumbnail.height
         except (OSError, ValueError):
-            return False
+            return None
+
+    def _render_thumbnail_card(
+        self, thumbnail: Tuple[Path, float], title: etree._Element, body: List[etree._Element],
+        document: _DocumentType, config: AppConfig,
+    ) -> None:
+        path, ratio = thumbnail
         page_width = self._page_content_width_inches()
         thumbnail_width = min(1.18, page_width * 0.20, 1.75 * ratio)
         gap = 0.16
@@ -2858,17 +2951,19 @@ class MarkdownToDocxConverter:
         preview.add_run().add_picture(str(path), width=Inches(thumbnail_width), height=Inches(thumbnail_width / ratio))
         heading = right.paragraphs[0]
         self._render_inline_node(title, heading, right, config, TextStyle(size_pt=BODY_SIZE_PT))
-        self._render_list(metadata, right, config, ordered=False, level=1)
+        for block in body:
+            self._render_block(block, right, config)
         for cell in (left, right):
             paragraphs = cell.paragraphs
             for index, paragraph in enumerate(paragraphs):
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                is_formula = self._paragraph_contains_display_math(paragraph)
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if is_formula else WD_ALIGN_PARAGRAPH.LEFT
                 fmt = paragraph.paragraph_format
-                fmt.space_before = Pt(3 if index == 0 else 0)
-                fmt.space_after = Pt(4 if index == len(paragraphs) - 1 else 2)
+                if fmt.left_indent is None:
+                    fmt.first_line_indent = Pt(0)
+                fmt.space_before = Pt(3 if index == 0 or is_formula else 0)
+                fmt.space_after = Pt(4 if index == len(paragraphs) - 1 or is_formula else 2)
                 fmt.line_spacing = 1.12
-            paragraphs[0].paragraph_format.first_line_indent = Pt(0)
-        return True
 
     def _gallery_columns(
         self, pictures: List[GalleryImage], document: _DocumentType

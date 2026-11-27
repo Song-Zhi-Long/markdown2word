@@ -158,6 +158,43 @@ class ImageLinkTests(unittest.TestCase):
         self.assertEqual(len(doc.inline_shapes), 1)
         self.assertEqual(doc.paragraphs[1].text, 'Parts of the diagram')
 
+    def test_illustrated_numbered_cards_keep_formulas_inside_and_comparison_outside(self):
+        for name in ('2d.png', '3d.png', 'bev.png'):
+            (self.root / name).write_bytes(self.png)
+        doc = self.convert(
+            '### Detection\n\nIntroduction.\n\n![2D](2d.png)\n\n**A. 2D Object Detection**\n\n'
+            'It finds locations.\n\n' + r'\\[ B\_{2d}=(x,y,w,h) \\]' + '\n\nImage positions.\n\n'
+            '[3D](3d.png)\n\n**B. 3D Object Detection**\n\nPredict positions and orientations.\n\n'
+            + r'\\[ B\_{3d}=(x,y,z,w,h,l,\theta) \\]' + '\n\n3D description.\n\n'
+            '[BEV](bev.png)\n\n**C. BEV Detection**\n\nDetect objects on the ground plane.\n\n'
+            '重点关注道路平面。\n\n这三个任务的区别如下：\n\n'
+            '- 2D：Image\n- 3D：Space\n- BEV：Ground plane\n\nClose.'
+        )
+        self.assertEqual(len(doc.tables), 3)
+        expected = [('A. 2D Object Detection', 1), ('B. 3D Object Detection', 1), ('C. BEV Detection', 0)]
+        for table, (title, formulas) in zip(doc.tables, expected):
+            picture, detail = table.rows[0].cells
+            self.assertEqual(len(picture._tc.xpath('.//wp:inline')), 1)
+            self.assertEqual(detail.paragraphs[0].text, title)
+            self.assertEqual(len(detail._tc.xpath('.//m:oMathPara')), formulas)
+            for paragraph in detail.paragraphs:
+                if paragraph._p.xpath('.//m:oMathPara'):
+                    self.assertEqual(paragraph.alignment, WD_ALIGN_PARAGRAPH.CENTER)
+        self.assertIn('重点关注道路平面。', doc.tables[-1].cell(0, 1).text)
+        self.assertTrue(any(p.text == '这三个任务的区别如下：' for p in doc.paragraphs))
+        self.assertTrue(any('BEV：Ground plane' in p.text for p in doc.paragraphs))
+        self.assertEqual(doc.paragraphs[-1].text, 'Close.')
+
+    def test_illustrated_cards_require_consecutive_titles_and_a_clear_end(self):
+        (self.root / 'diagram.png').write_bytes(self.png)
+        first = '![diagram](diagram.png)\n\n**A. First topic**\n\nFirst description.\n\n'
+        for label, end in (('B', ''), ('B', '\n\nSummary:\n\n- Unrelated: text'), ('C', '\n\n## Next')):
+            with self.subTest(label=label, end=end):
+                second = f'![diagram](diagram.png)\n\n**{label}. Second topic**\n\nSecond description.'
+                doc = self.convert(first + second + end)
+                self.assertFalse(doc.tables)
+                self.assertEqual(len(doc.inline_shapes), 2)
+
     def test_favicons_and_adjacent_source_lines_are_removed_before_requests(self):
         source = (
             r'[image](https://www.google.com/s2/favicons?domain=https://doi.org\&sz=32)'
